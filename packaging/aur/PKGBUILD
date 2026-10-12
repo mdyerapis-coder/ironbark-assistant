@@ -9,9 +9,13 @@
 #   /usr/bin/ironbark-core        daemon + namespace runner (host path is free;
 #                                 the supervisor bind-mounts it into the worker
 #                                 namespace at /opt/ironbark/namespace-runner)
-#   /usr/bin/ironbark-cli         operator CLI
+#   /usr/bin/ironbark-cli         operator CLI (one JSON DTO per subcommand)
 #   /opt/ironbark/namespace-bridge  network bridge, staged at this EXACT path;
 #                                 the containment code requires it there
+#
+# Desktop integration: an honest headless application entry (the core daemon is
+# the installed surface; there is no GUI yet). The emblem icon is original art,
+# not derived from the imagery pack (artwork rights disposition pending).
 
 pkgname=ironbark-assistant
 pkgver=0.1.0
@@ -21,13 +25,16 @@ arch=(x86_64)
 url="https://github.com/mdyerapis-coder/ironbark-assistant"
 license=(MIT)
 depends=(glibc bubblewrap)
-makedepends=(rust)
+makedepends=(rust desktop-file-utils gtk-update-icon-cache)
 optdepends=(
     "bun: provider/JEV adapter worker runtime"
 )
 source=(
     "https://github.com/mdyerapis-coder/ironbark-assistant/archive/refs/tags/v${pkgver}.tar.gz"
 )
+# Self-sourced package: the archive is produced by this repository's own tag,
+# so its hash cannot be pinned inside the tag (that would be a regress).
+# Pinned on the AUR side once the package is submitted and the tag is frozen.
 sha256sums=('SKIP')
 
 build() {
@@ -42,4 +49,19 @@ package() {
     install -Dm755 target/release/namespace_bridge -t "${pkgdir}/opt/ironbark"
     install -Dm644 LICENSE  -t "${pkgdir}/usr/share/licenses/${pkgname}"
     install -Dm644 README.md -t "${pkgdir}/usr/share/doc/${pkgname}"
+    install -Dm644 packaging/desktop/ironbark-assistant.desktop -t "${pkgdir}/usr/share/applications"
+    install -Dm644 packaging/desktop/ironbark-assistant.svg -t "${pkgdir}/usr/share/icons/hicolor/scalable/apps"
+}
+
+post_install() {
+    update-desktop-database -q
+    gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor 2>/dev/null || true
+}
+
+post_upgrade() {
+    post_install
+}
+
+post_remove() {
+    update-desktop-database -q
 }

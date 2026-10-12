@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Ironbark Assistant emblem: original soot field, amber fissure mark.
+       Not derived from the imagery pack (artwork rights pending). -->
+  <rect x="8" y="8" width="112" height="112" rx="22" fill="#161310" stroke="#504236" stroke-width="2"/>
+  <path d="M64 26 L40 102" stroke="#E09040" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M64 26 L92 74 L78 102" stroke="#FFC56A" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Ironbark Assistant
+Comment=Workstation assistant core: daemon, policy and containment (headless)
+GenericName=Assistant
+Exec=ironbark-core
+Icon=ironbark-assistant
+Terminal=false
+StartupNotify=false
+Categories=Utility;Development;
+Keywords=ironbark;assistant;ai;agent;
