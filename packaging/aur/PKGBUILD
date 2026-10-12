@@ -1,0 +1,45 @@
+# Maintainer: Mason <ironbark@llmclouds.au>
+# Ironbark Assistant — native workstation assistant core, CLI and namespace bridge.
+#
+# Builds the Rust workspace from the tagged source archive. The Bun adapter
+# workspace (packages/*) is present in the source for operator use and for
+# contract type-checking but is not built by this package.
+#
+# Layout (see docs/runtime/containment.md):
+#   /usr/bin/ironbark-core        daemon + namespace runner (host path is free;
+#                                 the supervisor bind-mounts it into the worker
+#                                 namespace at /opt/ironbark/namespace-runner)
+#   /usr/bin/ironbark-cli         operator CLI
+#   /opt/ironbark/namespace-bridge  network bridge, staged at this EXACT path;
+#                                 the containment code requires it there
+
+pkgname=ironbark-assistant
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Standalone workstation assistant: Rust core (SQLite, IPC, policy, containment) with CLI and namespace bridge"
+arch=(x86_64)
+url="https://github.com/mdyerapis-coder/ironbark-assistant"
+license=(MIT)
+depends=(glibc bubblewrap)
+makedepends=(rust)
+optdepends=(
+    "bun: provider/JEV adapter worker runtime"
+)
+source=(
+    "https://github.com/mdyerapis-coder/ironbark-assistant/archive/refs/tags/v${pkgver}.tar.gz"
+)
+sha256sums=('SKIP')
+
+build() {
+    cd "${srcdir}/ironbark-assistant-${pkgver}"
+    cargo build --release -p ironbark-core -p ironbark-cli
+}
+
+package() {
+    cd "${srcdir}/ironbark-assistant-${pkgver}"
+    install -Dm755 target/release/ironbark-core   -t "${pkgdir}/usr/bin"
+    install -Dm755 target/release/ironbark-cli    -t "${pkgdir}/usr/bin"
+    install -Dm755 target/release/namespace_bridge -t "${pkgdir}/opt/ironbark"
+    install -Dm644 LICENSE  -t "${pkgdir}/usr/share/licenses/${pkgname}"
+    install -Dm644 README.md -t "${pkgdir}/usr/share/doc/${pkgname}"
+}
