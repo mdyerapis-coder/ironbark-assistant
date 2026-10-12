@@ -1,0 +1,94 @@
+{
+  "purpose": "Design qualification smoke; not a benchmark or authorization decision",
+  "endpoint": "http://127.0.0.1:8420/v1/decisions",
+  "model": "Qwen2.5-0.5B-Instruct-Q8_0.gguf",
+  "cases": [
+    {
+      "case": "implement",
+      "expected": "IMPLEMENT",
+      "decision": {
+        "type": "enum",
+        "choice": "RESEARCH",
+        "confidence": 0.4516,
+        "distribution": {
+          "REVIEW": 0.4516,
+          "RESEARCH": 0.4516,
+          "IMPLEMENT": 0.3127,
+          "CHAT": 0.091
+        },
+        "latency_ms": 186.7,
+        "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+      },
+      "matches_expected": false,
+      "http_elapsed_ms": 202.6,
+      "online": true,
+      "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+    },
+    {
+      "case": "review",
+      "expected": "REVIEW",
+      "decision": {
+        "type": "enum",
+        "choice": "RESEARCH",
+        "confidence": 0.6799,
+        "distribution": {
+          "REVIEW": 0.6799,
+          "RESEARCH": 0.6799,
+          "CHAT": 0.1553,
+          "IMPLEMENT": 0.0903
+        },
+        "latency_ms": 166.5,
+        "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+      },
+      "matches_expected": false,
+      "http_elapsed_ms": 175.9,
+      "online": true,
+      "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+    },
+    {
+      "case": "chat",
+      "expected": "CHAT",
+      "decision": {
+        "type": "enum",
+        "choice": "CHAT",
+        "confidence": 0.4892,
+        "distribution": {
+          "CHAT": 0.4892,
+          "IMPLEMENT": 0.1153,
+          "REVIEW": 0.0764,
+          "RESEARCH": 0.0764
+        },
+        "latency_ms": 156.2,
+        "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+      },
+      "matches_expected": true,
+      "http_elapsed_ms": 164.0,
+      "online": true,
+      "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+    },
+    {
+      "case": "research",
+      "expected": "RESEARCH",
+      "decision": {
+        "type": "enum",
+        "choice": "CHAT",
+        "confidence": 0.4407,
+        "distribution": {
+          "CHAT": 0.4407,
+          "REVIEW": 0.2366,
+          "RESEARCH": 0.2366,
+          "IMPLEMENT": 0.1019
+        },
+        "latency_ms": 167.7,
+        "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+      },
+      "matches_expected": false,
+      "http_elapsed_ms": 175.2,
+      "online": true,
+      "model_id": "Qwen2.5-0.5B-Instruct-Q8_0.gguf"
+    }
+  ],
+  "matches": 1,
+  "total": 4,
+  "interpretation": "Live typed endpoint responds; current general assistant-task enum smoke is not qualified for routing authority. No model or source changed."
+}

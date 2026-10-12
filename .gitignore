@@ -1,0 +1,9 @@
+.worktrees/
+.superpowers/
+.sources/
+target/
+node_modules/
+dist/
+.env
+*.log
+qa/private/
