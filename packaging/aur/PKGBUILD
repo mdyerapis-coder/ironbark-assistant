@@ -39,6 +39,12 @@ sha256sums=('SKIP')
 
 build() {
     cd "${srcdir}/ironbark-assistant-${pkgver}"
+    # The cc crate (libsqlite3-sys "bundled") compiles sqlite3.c honoring
+    # CFLAGS/CXXFLAGS, emitting objects the final rustc/rust-lld link cannot
+    # resolve when they are LTO bytecode (gcc-GIMPLE objects). Strip LTO
+    # flags for the build so the bundled C compiles to plain objects.
+    CFLAGS=$(printf '%s' "${CFLAGS:-}" | sed -E 's/(^|[[:space:]])-flto(=[A-Za-z0-9_-]+)?//g')
+    CXXFLAGS=$(printf '%s' "${CXXFLAGS:-}" | sed -E 's/(^|[[:space:]])-flto(=[A-Za-z0-9_-]+)?//g')
     cargo build --release -p ironbark-core -p ironbark-cli
 }
 
@@ -46,7 +52,9 @@ package() {
     cd "${srcdir}/ironbark-assistant-${pkgver}"
     install -Dm755 target/release/ironbark-core   -t "${pkgdir}/usr/bin"
     install -Dm755 target/release/ironbark-cli    -t "${pkgdir}/usr/bin"
-    install -Dm755 target/release/namespace_bridge -t "${pkgdir}/opt/ironbark"
+    # The containment code binds this at the EXACT /opt/ironbark/namespace-bridge
+    # path inside worker namespaces, so the installed name carries the hyphen.
+    install -Dm755 target/release/namespace_bridge "${pkgdir}/opt/ironbark/namespace-bridge"
     install -Dm644 LICENSE  -t "${pkgdir}/usr/share/licenses/${pkgname}"
     install -Dm644 README.md -t "${pkgdir}/usr/share/doc/${pkgname}"
     install -Dm644 packaging/desktop/ironbark-assistant.desktop -t "${pkgdir}/usr/share/applications"

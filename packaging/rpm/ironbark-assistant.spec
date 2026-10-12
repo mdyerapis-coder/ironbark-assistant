@@ -7,6 +7,11 @@ License:        MIT
 URL:            https://github.com/mdyerapis-coder/ironbark-assistant
 Source0:        https://github.com/mdyerapis-coder/ironbark-assistant/archive/refs/tags/v%{version}.tar.gz
 
+# Portable macro fallbacks. These are defined on Fedora/EL; when building or
+# verifying on a non-EL rpm (e.g. Arch's rpmbuild) they are undefined, so
+# define equivalent paths to keep the spec buildable everywhere.
+%{!?_docdir: %define _docdir %{_datadir}/doc}
+%{!?_licensedir: %define _licensedir %{_datadir}/licenses}
 # desktop-file-utils may be absent in a minimal buildroot; provide harmless
 # fallbacks so the %post/%postun desktop hooks never break installation.
 %{!?_desktop_database_install: %define _desktop_database_install :}
@@ -48,6 +53,12 @@ yet qualified; see docs/runtime/ in the source for the exact verified boundary.
 %setup -q -n ironbark-assistant-%{version}
 
 %build
+# The cc crate (libsqlite3-sys "bundled") compiles sqlite3.c honoring
+# CFLAGS/CXXFLAGS; with distro LTO (-flto) those become LTO bytecode
+# objects the rustc/rust-lld final link cannot resolve. Strip LTO for
+# this build so the bundled C compiles to plain objects.
+export CFLAGS="$(echo "${CFLAGS:-}" | sed -E 's/(^|[[:space:]])-flto(=[A-Za-z0-9_-]+)?//g')"
+export CXXFLAGS="$(echo "${CXXFLAGS:-}" | sed -E 's/(^|[[:space:]])-flto(=[A-Za-z0-9_-]+)?//g')"
 cargo build --release -p ironbark-core -p ironbark-cli
 
 %install
@@ -78,6 +89,6 @@ install -Dm644 packaging/desktop/ironbark-assistant.svg %{buildroot}%{_datadir}/
 %{_datadir}/icons/hicolor/scalable/apps/ironbark-assistant.svg
 
 %changelog
-* Sun Oct 13 2026 Mason <ironbark@llmclouds.au> - 0.1.0-1
+* Tue Oct 13 2026 Mason <ironbark@llmclouds.au> - 0.1.0-1
 - Initial RPM packaging: core, CLI, namespace bridge and a headless desktop
   entry, built from the v0.1.0 source tag.
