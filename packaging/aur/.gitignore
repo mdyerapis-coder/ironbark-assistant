@@ -1,0 +1,5 @@
+# makepkg build output (regenerated locally; the package is built from the tag)
+src/
+pkg/
+*.pkg.tar.zst
+v0.1.0.tar.gz
