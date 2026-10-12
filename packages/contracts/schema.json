@@ -361,13 +361,22 @@
         "citation": {
           "$ref": "#/$defs/Citation"
         },
+        "disclosure": {
+          "$ref": "#/$defs/DisclosurePolicy"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
         "text": {
           "type": "string"
         }
       },
       "required": [
         "text",
-        "citation"
+        "citation",
+        "project_id",
+        "disclosure"
       ],
       "type": "object"
     },
@@ -1468,6 +1477,56 @@
     "Digest": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
+    },
+    "DisclosurePolicy": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "local_only",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "allowed_connections",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "connection_ids"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "explicit_public",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "EventEnvelope": {
       "additionalProperties": false,

@@ -24,7 +24,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ConversationSummary, BranchView, MessageView, BranchProvenance, ConversationHistory, ConversationExport, ExportFormat,
         QueuedTurn, TurnDispatch, TurnSnapshot, ArtifactReceipt, RunResolution,
         ImportSource, ImportFormat, ImportFile, ImportPreview, ImportReceipt, CapacityReport, RetentionReport,
-        BackupObject, BackupManifest, RestoreReport, ArtifactRead);
+        BackupObject, BackupManifest, RestoreReport, ArtifactRead,
+        CheckpointPhase, CheckpointRecord, RecoveryReport, RecoveryDecision,
+        SourceInput, DisclosurePolicy, SourceRevision, CitationView,
+        DeletionScope, DeletionReceipt,
+        MemoryCandidate, MemoryDecision, MemoryRecord, EmbeddingModelIdentity, EmbeddingIndexReceipt,
+        JudgmentDomain, QualificationState, QualificationRecord, AdvisoryOutcome);
     // Interfaces describe real worker implementations and import only generated DTOs.
     output.push_str("\nexport interface HarnessAdapter {\n  describe(): Promise<HarnessDescriptor>;\n  open(input: OpenSessionInput): Promise<SessionRef>;\n  turn(session: SessionRef, input: TurnInput): AsyncIterable<WorkerEvent>;\n  answerPermission(input: PermissionAnswer): Promise<void>;\n  interrupt(session: SessionRef): Promise<void>;\n  exportContext(session: SessionRef): Promise<ContextPackage>;\n  close(session: SessionRef): Promise<void>;\n}\nexport interface ProviderAdapter {\n  describe(connection: ConnectionConfig): Promise<ConnectionDescriptor>;\n  stream(input: WorkerProviderTurnInput, signal: AbortSignal): AsyncIterable<WorkerEvent>;\n}\nexport interface CoreClient {\n  request<T>(command: CoreCommand, requestId?: string): Promise<T>;\n  events(afterSeq: number): AsyncIterable<EventEnvelope>;\n}\n");
     fs::write(directory.join("src/generated.ts"), output)?;

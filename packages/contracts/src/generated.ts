@@ -24,7 +24,7 @@ export type ApprovalGrant = { id: GrantId, action_id: ActionId, action_digest: D
 export type SessionRef = { harness: HarnessKind, native_id: string, native_version: string, project_id: ProjectId, cwd: string, resolved_route: RoutePin, };
 export type CitationLocator = { page?: number, section?: string, line_start?: number, line_end?: number, sheet?: string, cell_range?: string, bounding_box?: [number, number, number, number], time_start_ms?: number, time_end_ms?: number, };
 export type Citation = { source_id: string, revision_digest: Digest, locator: CitationLocator, };
-export type CitedExcerpt = { text: string, citation: Citation, };
+export type CitedExcerpt = { text: string, citation: Citation, project_id: ProjectId, disclosure: DisclosurePolicy, };
 export type ContextPackage = { digest: Digest, brief: string, constraints: Array<string>, excerpts: Array<CitedExcerpt>, artifacts: Array<ArtifactId>, unresolved_questions: Array<string>, originating_sessions: Array<SessionRef>, };
 export type CheckReceipt = { name: string, passed: boolean, evidence_digest?: Digest, details: string, };
 export type ResultManifest = { run_id: RunId, native_session?: SessionRef, artifacts: Array<ArtifactId>, checks: Array<CheckReceipt>, acceptance_satisfied: boolean, unresolved: Array<string>, };
@@ -85,6 +85,25 @@ export type BackupObject = { digest: Digest, bytes: number, };
 export type BackupManifest = { format: number, created_at: number, database_digest: Digest, database_bytes: number, objects: Array<BackupObject>, };
 export type RestoreReport = { database_digest: Digest, restored_objects: number, blocked_runs: number, stopped: boolean, namespace: string, };
 export type ArtifactRead = { digest: Digest, bytes: number, data: string, };
+export type CheckpointPhase = "planned" | "pre_mutation" | "post_mutation" | "post_verification" | "pre_consequential";
+export type CheckpointRecord = { run_id: RunId, phase: CheckpointPhase, state_digest: Digest, manifest: unknown, created_at: number, };
+export type RecoveryReport = { run_id: RunId, run_state: RunState, recorded_pid?: bigint, recorded_start_time?: bigint, checkpoint?: CheckpointRecord, observed_workspace: unknown, pending_mutation: boolean, uncertain_actions: Array<string>, recommended: Array<string>, };
+export type RecoveryDecision = "accept_observed" | "resume_read_only" | "continue_from_checkpoint" | "abandon";
+export type SourceInput = { "type": "file", path: string, } | { "type": "attachment", artifact_id: ArtifactId, } | { "type": "fetched", url: string, receipt: Digest, };
+export type DisclosurePolicy = { "type": "local_only" } | { "type": "allowed_connections", connection_ids: Array<string>, } | { "type": "explicit_public" };
+export type SourceRevision = { source_id: string, project_id: ProjectId, digest: Digest, mime: string, extractor_id: string, extractor_version: string, locators: number, created_at: number, };
+export type CitationView = { "type": "content", text: string, } | { "type": "deleted" } | { "type": "missing" };
+export type DeletionScope = "source" | "project" | "all";
+export type DeletionReceipt = { source_id: string, chunks_removed: number, vectors_removed: number, revisions_removed: number, applied_at: number, };
+export type MemoryCandidate = { project_id: ProjectId, text: string, provenance: string, input_refs?: Array<string>, };
+export type MemoryDecision = "approve" | "edit_and_approve" | "reject";
+export type MemoryRecord = { id: string, project_id: ProjectId, text: string, state: string, provenance: string, created_at: number, };
+export type EmbeddingModelIdentity = { connection_id: string, model_id: string, version: string, dimensions: number, };
+export type EmbeddingIndexReceipt = { revision_id: string, model: EmbeddingModelIdentity, chunks_indexed: number, indexed_at: number, };
+export type JudgmentDomain = "task_intent" | "retrieval_relevance" | "handoff_completeness" | "evidence_needed" | "allowed_route_choice";
+export type QualificationState = "enabled" | "blocked";
+export type QualificationRecord = { domain: JudgmentDomain, model_identity: string, prompt_digest: Digest, state: QualificationState, upper_error_bound: number, acceptance_coverage: number, holdout_size: number, evaluated_at: number, calibrator_digest: Digest, };
+export type AdvisoryOutcome = { "type": "qualified_choice", choice: string, decision_id: DecisionId, } | { "type": "needs_planner", reason: string, } | { "type": "unavailable" };
 
 export interface HarnessAdapter {
   describe(): Promise<HarnessDescriptor>;

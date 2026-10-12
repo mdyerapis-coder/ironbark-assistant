@@ -103,7 +103,7 @@ pub struct CitationLocator {
 pub struct Citation { pub source_id: String, pub revision_digest: Digest, pub locator: CitationLocator }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
-pub struct CitedExcerpt { pub text: String, pub citation: Citation }
+pub struct CitedExcerpt { pub text: String, pub citation: Citation, pub project_id: ProjectId, pub disclosure: DisclosurePolicy }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ContextPackage { pub digest: Digest, pub brief: String, pub constraints: Vec<String>, pub excerpts: Vec<CitedExcerpt>, pub artifacts: Vec<ArtifactId>, pub unresolved_questions: Vec<String>, pub originating_sessions: Vec<SessionRef> }
@@ -195,6 +195,73 @@ pub struct JudgmentInput { pub decision_id: DecisionId, pub domain: String, pub 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct JudgmentRecord { pub decision_id: DecisionId, pub domain: String, pub domain_version: String, pub candidates: Vec<String>, pub input_refs: Vec<String>, pub input_digest: Digest, pub criterion: String, pub route_policy_digest: Digest, pub model_identity: String, pub runtime_identity_digest: Digest, pub prompt_digest: Digest, pub candidate_codes: std::collections::BTreeMap<String, String>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub choice: Option<String>, pub state: JudgmentState, pub score: ScoreEvidence, #[ts(type = "number")] pub latency_ms: u64, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub qualification_digest: Option<Digest>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub reason: Option<String> }
+
+// ── C4: state transitions, checkpoints, reconciliation ───────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointPhase { Planned, PreMutation, PostMutation, PostVerification, PreConsequential }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointRecord { pub run_id: RunId, pub phase: CheckpointPhase, pub state_digest: Digest, #[ts(type = "unknown")] pub manifest: serde_json::Value, #[ts(type = "number")] pub created_at: i64 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryReport { pub run_id: RunId, pub run_state: RunState, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub recorded_pid: Option<u64>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub recorded_start_time: Option<i64>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub checkpoint: Option<CheckpointRecord>, #[ts(type = "unknown")] pub observed_workspace: serde_json::Value, pub pending_mutation: bool, pub uncertain_actions: Vec<String>, pub recommended: Vec<String> }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryDecision { AcceptObserved, ResumeReadOnly, ContinueFromCheckpoint, Abandon }
+
+// ── P3: immutable source ingestion and real extraction ───────────────────────────
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceInput { File { path: String }, Attachment { artifact_id: ArtifactId }, Fetched { url: String, receipt: Digest } }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DisclosurePolicy { LocalOnly, AllowedConnections { connection_ids: Vec<String> }, ExplicitPublic }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SourceRevision { pub source_id: String, pub project_id: ProjectId, pub digest: Digest, pub mime: String, pub extractor_id: String, pub extractor_version: String, pub locators: usize, #[ts(type = "number")] pub created_at: i64 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CitationView { Content { text: String }, Deleted, Missing }
+
+// ── P4: filter-before-ranking retrieval and deletion semantics ────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionScope { Source, Project, All }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeletionReceipt { pub source_id: String, pub chunks_removed: usize, pub vectors_removed: usize, pub revisions_removed: usize, #[ts(type = "number")] pub applied_at: i64 }
+
+// ── P5: approved memory and optional versioned local embeddings ───────────────────
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryCandidate { pub project_id: ProjectId, pub text: String, pub provenance: String, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub input_refs: Option<Vec<String>> }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryDecision { Approve, EditAndApprove, Reject }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRecord { pub id: String, pub project_id: ProjectId, pub text: String, pub state: String, pub provenance: String, #[ts(type = "number")] pub created_at: i64 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingModelIdentity { pub connection_id: String, pub model_id: String, pub version: String, #[ts(type = "number")] pub dimensions: u32 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingIndexReceipt { pub revision_id: String, pub model: EmbeddingModelIdentity, pub chunks_indexed: usize, #[ts(type = "number")] pub indexed_at: i64 }
+
+// ── J2/J3: domain qualification and advisory judgments ────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgmentDomain { TaskIntent, RetrievalRelevance, HandoffCompleteness, EvidenceNeeded, AllowedRouteChoice }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum QualificationState { Enabled, Blocked }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationRecord { pub domain: JudgmentDomain, pub model_identity: String, pub prompt_digest: Digest, pub state: QualificationState, pub upper_error_bound: f64, pub acceptance_coverage: f64, #[ts(type = "number")] pub holdout_size: u32, #[ts(type = "number")] pub evaluated_at: i64, pub calibrator_digest: Digest }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AdvisoryOutcome { QualifiedChoice { choice: String, decision_id: DecisionId }, NeedsPlanner { reason: String }, Unavailable }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
