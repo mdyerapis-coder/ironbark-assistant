@@ -1,0 +1,105 @@
+// Generated from ironbark-core::contracts by export_contracts. Do not edit.
+// Protocol 1. Unix timestamps are integer milliseconds; micro-USD never floats.
+export type ProjectId = string;
+export type ConversationId = string;
+export type BranchId = string;
+export type MessageId = string;
+export type JobId = string;
+export type NodeId = string;
+export type RunId = string;
+export type ActionId = string;
+export type GrantId = string;
+export type ArtifactId = string;
+export type DecisionId = string;
+export type Digest = string;
+export type HarnessKind = "omp" | "codex" | "opencode" | "claude" | "hermes" | "alphacode";
+export type CapabilityState = "unknown" | "unavailable" | "unqualified" | "qualified";
+export type CapabilityObservation = { name: string, state: CapabilityState, implementation_version: string, evidence_digest?: Digest, observed_at: number, };
+export type RoutePin = { connection_id: string, model_id: string, harness?: HarnessKind, };
+export type SpendPolicy = "free_only" | "paid_allowed";
+export type ProjectPolicy = { version: number, project_id: ProjectId, allowed_connection_ids: Array<string>, allowed_tools: Array<string>, read_roots: Array<string>, write_roots: Array<string>, network_destinations: Array<string>, local_only: boolean, max_workers: number, max_requests: number, max_cost_microusd?: number, spend_policy: SpendPolicy, allow_unknown_cost: boolean, };
+export type RunState = "queued" | "ready" | "running" | "awaiting_approval" | "blocked" | "reviewing" | "verifying" | "paused" | "cancelling" | "cancelled" | "succeeded" | "failed";
+export type ActionSpec = { id: ActionId, run_id: RunId, project_id: ProjectId, kind: string, canonical_args: unknown, scope: unknown, destination?: string, policy_version: number, expected_state_digest: Digest, };
+export type ApprovalGrant = { id: GrantId, action_id: ActionId, action_digest: Digest, policy_version: number, expected_state_digest: Digest, expires_at: number, revoked_at?: number, };
+export type SessionRef = { harness: HarnessKind, native_id: string, native_version: string, project_id: ProjectId, cwd: string, resolved_route: RoutePin, };
+export type CitationLocator = { page?: number, section?: string, line_start?: number, line_end?: number, sheet?: string, cell_range?: string, bounding_box?: [number, number, number, number], time_start_ms?: number, time_end_ms?: number, };
+export type Citation = { source_id: string, revision_digest: Digest, locator: CitationLocator, };
+export type CitedExcerpt = { text: string, citation: Citation, };
+export type ContextPackage = { digest: Digest, brief: string, constraints: Array<string>, excerpts: Array<CitedExcerpt>, artifacts: Array<ArtifactId>, unresolved_questions: Array<string>, originating_sessions: Array<SessionRef>, };
+export type CheckReceipt = { name: string, passed: boolean, evidence_digest?: Digest, details: string, };
+export type ResultManifest = { run_id: RunId, native_session?: SessionRef, artifacts: Array<ArtifactId>, checks: Array<CheckReceipt>, acceptance_satisfied: boolean, unresolved: Array<string>, };
+export type ContentPart = { "type": "text", text: string, } | { "type": "image", uri: string, mime_type: string, } | { "type": "audio", uri: string, mime_type: string, } | { "type": "artifact", artifact_id: ArtifactId, };
+export type ToolDescriptor = { name: string, description: string, input_schema: unknown, };
+export type OpenSessionInput = { run_id: RunId, project_id: ProjectId, cwd: string, route: RoutePin, context: ContextPackage, policy: ProjectPolicy, resume?: SessionRef, };
+export type TurnInput = { request_id: string, message_id: MessageId, content: Array<ContentPart>, allowed_tools: Array<ToolDescriptor>, budget: ProjectPolicy, };
+export type PermissionDecision = "allow" | "deny";
+export type PermissionAnswer = { native_request_id: string, action: ActionSpec, grant?: ApprovalGrant, decision: PermissionDecision, };
+export type HarnessDescriptor = { harness: HarnessKind, version: string, transport: string, route_compatibility: Array<string>, approval: CapabilityState, cancel: CapabilityState, resume: CapabilityState, child_observability: CapabilityState, capabilities: Array<CapabilityObservation>, };
+export type ProviderProtocol = "openai_completions" | "openai_responses" | "anthropic" | "gemini" | "ollama" | "llama_cpp" | "custom";
+export type AuthRef = { "type": "secret_service", service: string, account: string, } | { "type": "bitwarden", item_id: string, field: string, } | { "type": "native_session", harness: HarnessKind, profile: string, };
+export type Capability = "text" | "tools" | "vision" | "audio" | "embeddings" | "transcription" | "reasoning";
+export type ModelDescriptor = { id: string, context_limit: number, output_limit: number, capabilities: Array<CapabilityObservation>, };
+export type ConnectionConfig = { id: string, protocol: ProviderProtocol, endpoint: string, models: Array<ModelDescriptor>, auth_ref?: AuthRef, allowed_projects: Array<ProjectId>, };
+export type ConnectionDescriptor = { id: string, protocol: ProviderProtocol, endpoint: string, models: Array<ModelDescriptor>, capabilities: Array<CapabilityObservation>, availability: CapabilityState, auth_available: boolean, };
+export type ProviderRole = "system" | "user" | "assistant" | "tool";
+export type ProviderToolCall = { id: string, name: string, arguments: unknown, };
+export type ProviderMessage = { role: ProviderRole, content: Array<ContentPart>, tool_call_id?: string, tool_calls?: Array<ProviderToolCall>, sdk_content?: unknown, sdk_route?: RoutePin, tool_result_error?: boolean, };
+export type ProviderTurnInput = { run_id: RunId, request_id: string, message_id: MessageId, route: RoutePin, messages: Array<ProviderMessage>, required_capabilities: Array<Capability>, tool_schemas: Array<ToolDescriptor>, disclosure_digest: Digest, policy: ProjectPolicy, max_output_tokens?: number, };
+export type WorkerProviderTurnInput = { credential_lease_id: string, connection: ConnectionConfig, run_id: RunId, request_id: string, message_id: MessageId, route: RoutePin, messages: Array<ProviderMessage>, required_capabilities: Array<Capability>, tool_schemas: Array<ToolDescriptor>, disclosure_digest: Digest, policy: ProjectPolicy, max_output_tokens?: number, };
+export type BillingObservation = { state: BillingState, cost_microusd?: number, };
+export type BillingState = "unknown" | "reported";
+export type UsageSource = "provider" | "unknown";
+export type UsageObservation = { input_tokens?: number, output_tokens?: number, cost_microusd?: number, billing: BillingObservation, source: UsageSource, };
+export type ScoreEvidence = { "type": "none", } | { "type": "raw_token_log_prob", value: number, token: string, token_position: number, } | { "type": "calibrated_selective_risk", upper_error_bound: number, dataset_digest: Digest, calibrator_digest: Digest, };
+export type JudgmentState = "available" | "invalid" | "abstain" | "unqualified" | "unavailable";
+export type JudgmentInput = { decision_id: DecisionId, domain: string, domain_version: string, candidates: Array<string>, input_refs: Array<string>, input_digest: Digest, criterion: string, route_policy_digest: Digest, };
+export type JudgmentRecord = { decision_id: DecisionId, domain: string, domain_version: string, candidates: Array<string>, input_refs: Array<string>, input_digest: Digest, criterion: string, route_policy_digest: Digest, model_identity: string, runtime_identity_digest: Digest, prompt_digest: Digest, candidate_codes: { [key in string]?: string }, choice?: string, state: JudgmentState, score: ScoreEvidence, latency_ms: number, qualification_digest?: Digest, reason?: string, };
+export type CoreEvent = { "type": "turn_started", message_id: MessageId, } | { "type": "text_delta", message_id: MessageId, delta: string, } | { "type": "text_replace", message_id: MessageId, text: string, } | { "type": "reasoning_delta", message_id: MessageId, delta: string, } | { "type": "provider_tool_call", message_id: MessageId, call: ProviderToolCall, } | { "type": "provider_message", message_id: MessageId, content: unknown, route: RoutePin, } | { "type": "tool_started", action: ActionSpec, } | { "type": "tool_finished", action_id: ActionId, result: unknown, } | { "type": "approval_needed", action: ActionSpec, } | { "type": "state_changed", entity_id: string, state: string, } | { "type": "session_bound", session: SessionRef, } | { "type": "artifact_added", artifact_id: ArtifactId, digest: Digest, } | { "type": "judgment_recorded", judgment: JudgmentRecord, } | { "type": "usage_observed", usage: UsageObservation, } | { "type": "error", code: string, message: string, details: unknown, } | { "type": "turn_finished", message_id: MessageId, status: RunState, stop_reason?: string, };
+export type WorkerEvent = { session_id?: string, turn_id: string, tool_id?: string, run_id: RunId, payload: CoreEvent, };
+export type EventEnvelope = { protocol: 1, seq: number, request_id?: string, project_id?: ProjectId, run_id?: RunId, timestamp: number, payload: CoreEvent, };
+export type Project = { id: ProjectId, name: string, root: string, created_at: number, };
+export type CoreCommand = { "type": "status", } | { "type": "events", after: number, } | { "type": "project_list", } | { "type": "project_create", name: string, root: string, } | { "type": "doctor", } | { "type": "shutdown", } | { "type": "artifact_read", project_id: ProjectId, artifact_id: ArtifactId, } | { "type": "import_preview", project_id: ProjectId, source: ImportSource, } | { "type": "import_apply", project_id: ProjectId, preview_digest: Digest, } | { "type": "backup_create", destination: string, } | { "type": "retention_sweep", } | { "type": "object_capacity", project_id: ProjectId, } | { "type": "conversation_create", project_id: ProjectId, } | { "type": "conversation_history", conversation_id: ConversationId, } | { "type": "conversation_rename", conversation_id: ConversationId, title: string, } | { "type": "conversation_search", project_id: ProjectId, query: string, include_archived: boolean, limit: number, } | { "type": "conversation_export", conversation_id: ConversationId, format: ExportFormat, } | { "type": "conversation_edit", message_id: MessageId, parts: Array<ContentPart>, } | { "type": "conversation_queue_turn", conversation_id: ConversationId, branch_id: BranchId, parts: Array<ContentPart>, pin: RoutePin, context?: ContextPackage, } | { "type": "conversation_regenerate", message_id: MessageId, pin: RoutePin, } | { "type": "conversation_archive", conversation_id: ConversationId, } | { "type": "conversation_delete", conversation_id: ConversationId, resolution: RunResolution, } | { "type": "run_interrupt", run_id: RunId, };
+export type CoreReply = { "type": "ok", value: unknown, } | { "type": "error", code: string, message: string, details: unknown, };
+export type ClientFrame = { "type": "hello", protocol: 1, session_nonce: string, } | { "type": "request", request_id: string, command: CoreCommand, } | { "type": "subscribe", after_seq: number, };
+export type ServerFrame = { "type": "hello", protocol: 1, } | { "type": "reply", request_id: string, reply: CoreReply, } | { "type": "event", event: EventEnvelope, } | { "type": "error", code: string, message: string, after_seq: number, };
+export type ConversationSummary = { id: ConversationId, title: string, archived: boolean, created_at: number, };
+export type BranchView = { id: BranchId, parent_id?: BranchId, provenance: BranchProvenance, messages: Array<MessageView>, };
+export type MessageView = { id: MessageId, origin_branch_id: BranchId, role: string, parts: Array<ContentPart>, status: string, created_at: number, run_id?: RunId, snapshot?: TurnSnapshot, receipts: Array<EventEnvelope>, };
+export type BranchProvenance = { operation: string, original_message_id?: MessageId, preserved_run_ids: Array<RunId>, prior_effects_undone: boolean, };
+export type ConversationHistory = { id: ConversationId, project_id: ProjectId, title: string, archived: boolean, branches: Array<BranchView>, };
+export type ConversationExport = { conversation_id: ConversationId, format: ExportFormat, content: string, };
+export type ExportFormat = "json" | "markdown";
+export type QueuedTurn = { run_id: RunId, branch_id: BranchId, user_message_id: MessageId, assistant_message_id: MessageId, replayed: boolean, };
+export type TurnDispatch = { run_id: RunId, request_id: string, branch_id: BranchId, user_message_id: MessageId, assistant_message_id: MessageId, snapshot: TurnSnapshot, messages: Array<MessageView>, };
+export type TurnSnapshot = { route: RoutePin, context: ContextPackage, disclosure_digest: Digest, policy: ProjectPolicy, artifact_receipts: Array<ArtifactReceipt>, };
+export type ArtifactReceipt = { artifact_id: ArtifactId, digest: Digest, origin_run_id?: RunId, };
+export type RunResolution = { run_ids: Array<RunId>, };
+export type ImportSource = { path: string, format: ImportFormat, };
+export type ImportFormat = { "type": "document" } | { "type": "native_transcript", origin: string, };
+export type ImportFile = { path: string, digest: Digest, bytes: number, device: string, inode: string, };
+export type ImportPreview = { digest: Digest, project_id: ProjectId, kind: string, files: Array<ImportFile>, additive: boolean, archived_only: boolean, warnings: Array<string>, };
+export type ImportReceipt = { preview_digest: Digest, project_id: ProjectId, kind: string, origin: string, source_digest: Digest, artifact_id?: ArtifactId, source_id?: string, connection_id?: string, archived_only: boolean, applied_at: number, };
+export type CapacityReport = { bytes: number, soft_bytes: number, hard_bytes: number, soft_exceeded: boolean, };
+export type RetentionReport = { removed_objects: number, removed_staging_files: number, reclaimed_bytes: number, retained_objects: number, };
+export type BackupObject = { digest: Digest, bytes: number, };
+export type BackupManifest = { format: number, created_at: number, database_digest: Digest, database_bytes: number, objects: Array<BackupObject>, };
+export type RestoreReport = { database_digest: Digest, restored_objects: number, blocked_runs: number, stopped: boolean, namespace: string, };
+export type ArtifactRead = { digest: Digest, bytes: number, data: string, };
+
+export interface HarnessAdapter {
+  describe(): Promise<HarnessDescriptor>;
+  open(input: OpenSessionInput): Promise<SessionRef>;
+  turn(session: SessionRef, input: TurnInput): AsyncIterable<WorkerEvent>;
+  answerPermission(input: PermissionAnswer): Promise<void>;
+  interrupt(session: SessionRef): Promise<void>;
+  exportContext(session: SessionRef): Promise<ContextPackage>;
+  close(session: SessionRef): Promise<void>;
+}
+export interface ProviderAdapter {
+  describe(connection: ConnectionConfig): Promise<ConnectionDescriptor>;
+  stream(input: WorkerProviderTurnInput, signal: AbortSignal): AsyncIterable<WorkerEvent>;
+}
+export interface CoreClient {
+  request<T>(command: CoreCommand, requestId?: string): Promise<T>;
+  events(afterSeq: number): AsyncIterable<EventEnvelope>;
+}

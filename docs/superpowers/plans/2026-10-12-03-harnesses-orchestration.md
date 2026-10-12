@@ -8,7 +8,7 @@
 
 **Tech Stack:** Bun/TypeScript; ACP SDK 1.8.0; OMP SDK 18.8.9; native Codex app-server; Claude Agent SDK 0.3.296/installed CLI 2.1.296; Rust core/Bubblewrap; pinned AlphaCode 1.0.79.
 
-**Spec:** [design](../../../DESIGN.md) §§5,9; [AlphaCode](../../../ALPHACODE-ASSESSMENT.md); [master contracts](2026-10-12-ironbark-assistant.md).
+**Spec:** [design](../../design/DESIGN.md) §§5,9; [AlphaCode](../../design/ALPHACODE-ASSESSMENT.md); [master contracts](2026-10-12-ironbark-assistant.md).
 
 ## Global Constraints
 

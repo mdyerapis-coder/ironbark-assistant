@@ -1,0 +1,2527 @@
+diff --git i/Cargo.lock w/Cargo.lock
+index 463afdf..e3919b3 100644
+--- i/Cargo.lock
++++ w/Cargo.lock
+@@ -124,6 +124,7 @@ dependencies = [
+  "objc2-app-kit",
+  "objc2-foundation",
+  "open",
++ "parking_lot",
+  "pdf-extract",
+  "proctitle",
+  "pulldown-cmark",
+diff --git i/Cargo.toml w/Cargo.toml
+index ce73d0a..a55efb9 100644
+--- i/Cargo.toml
++++ w/Cargo.toml
+@@ -29,6 +29,7 @@ tikv-jemalloc-sys = { version = "0.6", optional = true }
+ tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+ futures = "0.3"
+ async-trait = "0.1"
++parking_lot = "0.12"
+ tokio-stream = "0.1"
+ tokio-util = { version = "0.7", features = ["rt"] }
+ tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+diff --git i/src/alphacode_app_core/agent/response_recovery.rs w/src/alphacode_app_core/agent/response_recovery.rs
+index 7f6ee89..0959c0c 100644
+--- i/src/alphacode_app_core/agent/response_recovery.rs
++++ w/src/alphacode_app_core/agent/response_recovery.rs
+@@ -493,6 +493,7 @@ impl Agent {
+         &mut self,
+         trigger: super::free_pool_rotation::RotationTrigger,
+     ) -> Option<u64> {
++        if crate::alphacode_app_core::ironbark_permissions::managed() { return None; }
+         let current = self.provider.model();
+         if !super::free_pool_rotation::should_rotate_for_provider(
+             &self.provider.display_name(),
+diff --git i/src/alphacode_app_core/agent/turn_execution.rs w/src/alphacode_app_core/agent/turn_execution.rs
+index fc78e69..1848598 100644
+--- i/src/alphacode_app_core/agent/turn_execution.rs
++++ w/src/alphacode_app_core/agent/turn_execution.rs
+@@ -754,6 +754,8 @@ impl Agent {
+             .map(|d| format!("debug-{}", d.as_millis()))
+             .unwrap_or_else(|_| "debug".to_string());
+         let ctx = ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: self.session.id.clone(),
+             message_id: self.session.id.clone(),
+             tool_call_id: call_id,
+diff --git i/src/alphacode_app_core/agent/turn_loops.rs w/src/alphacode_app_core/agent/turn_loops.rs
+index e317a94..147545c 100644
+--- i/src/alphacode_app_core/agent/turn_loops.rs
++++ w/src/alphacode_app_core/agent/turn_loops.rs
+@@ -809,6 +809,8 @@ impl Agent {
+                             );
+                         }
+                         let ctx = ToolContext {
++                            permission_gate: None,
++                            permission_receipt: None,
+                             session_id: self.session.id.clone(),
+                             message_id: self.session.id.clone(),
+                             tool_call_id: request_id.clone(),
+@@ -1366,6 +1368,8 @@ impl Agent {
+                 }
+ 
+                 let ctx = ToolContext {
++                    permission_gate: None,
++                    permission_receipt: None,
+                     session_id: self.session.id.clone(),
+                     message_id: message_id.clone(),
+                     tool_call_id: tc.id.clone(),
+diff --git i/src/alphacode_app_core/agent/turn_streaming_mpsc.rs w/src/alphacode_app_core/agent/turn_streaming_mpsc.rs
+index 6421fe1..58f69b7 100644
+--- i/src/alphacode_app_core/agent/turn_streaming_mpsc.rs
++++ w/src/alphacode_app_core/agent/turn_streaming_mpsc.rs
+@@ -990,6 +990,8 @@ impl Agent {
+                     } => {
+                         // Execute native tool and send result back to SDK bridge
+                         let ctx = ToolContext {
++                            permission_gate: None,
++                            permission_receipt: None,
+                             session_id: self.session.id.clone(),
+                             message_id: self.session.id.clone(),
+                             tool_call_id: request_id.clone(),
+@@ -1573,6 +1575,8 @@ impl Agent {
+                 }
+ 
+                 let ctx = ToolContext {
++                    permission_gate: None,
++                    permission_receipt: None,
+                     session_id: self.session.id.clone(),
+                     message_id: message_id.clone(),
+                     tool_call_id: tc.id.clone(),
+diff --git i/src/alphacode_app_core/ironbark_permissions.rs w/src/alphacode_app_core/ironbark_permissions.rs
+new file mode 100644
+index 0000000..09c2a75
+--- /dev/null
++++ w/src/alphacode_app_core/ironbark_permissions.rs
+@@ -0,0 +1,157 @@
++//! Mandatory managed dispatch boundary. Authority comes only from the owning host connection.
++use anyhow::{Result, bail};
++use async_trait::async_trait;
++use serde::{Deserialize, Serialize};
++use serde_json::Value;
++use std::{collections::HashMap, sync::{Arc, LazyLock, OnceLock, atomic::{AtomicBool, Ordering}}, time::Duration};
++use parking_lot::Mutex;
++use tokio::sync::{mpsc, oneshot};
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
++#[serde(deny_unknown_fields)]
++pub struct NativeAction {
++    pub session_id: String, pub tool_call_id: String, pub resolved_name: String,
++    pub canonical_input: Value, pub cwd: String, pub route: Value,
++    pub policy_version: u64, pub state_digest: String,
++}
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
++#[serde(deny_unknown_fields)]
++pub struct ManagedIdentity {
++    pub build_digest: String, pub effective_route: Value, pub cwd: String,
++    pub allowed_tools: Vec<String>, pub profile: String, pub socket: String,
++}
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct PermissionRequest { pub request_id: String, pub action: NativeAction }
++#[derive(Clone)]
++pub struct PermissionReceipt { action: NativeAction, consumed: Arc<AtomicBool> }
++impl PermissionReceipt {
++    pub fn consume(&self, action: &NativeAction) -> Result<()> {
++        if &self.action != action || self.consumed.swap(true, Ordering::SeqCst) { bail!("PermissionReceiptMismatchOrReplay"); }
++        Ok(())
++    }
++}
++#[async_trait]
++pub trait PermissionGate: Send + Sync {
++    fn action(&self, ctx: &crate::alphacode_tool_core::ToolContext, name: &str, input: &Value) -> Result<NativeAction>;
++    async fn check(&self, action: NativeAction) -> Result<PermissionReceipt>;
++    fn started(&self, action: NativeAction) -> Result<()>;
++}
++type Pending = HashMap<String, (NativeAction, oneshot::Sender<bool>)>;
++struct PendingPermission<'a> { pending: &'a Mutex<Pending>, id: &'a str }
++impl Drop for PendingPermission<'_> { fn drop(&mut self) { self.pending.lock().remove(self.id); } }
++pub struct TransportGate {
++    pub identity: ManagedIdentity, tx: mpsc::UnboundedSender<PermissionRequest>,
++    pending: Mutex<Pending>, state: Mutex<Option<(u64, String)>>, timeout: Duration,
++    connected: AtomicBool,
++    events: OnceLock<mpsc::UnboundedSender<crate::protocol::ServerEvent>>,
++}
++impl TransportGate {
++    pub fn new(identity: ManagedIdentity, timeout: Duration) -> (Arc<Self>, mpsc::UnboundedReceiver<PermissionRequest>) {
++        let (tx, rx) = mpsc::unbounded_channel();
++        (Arc::new(Self { identity, tx, pending: Mutex::new(HashMap::new()), state: Mutex::new(None), timeout, connected: AtomicBool::new(true), events: OnceLock::new() }), rx)
++    }
++    pub fn bind_events(&self, tx: mpsc::UnboundedSender<crate::protocol::ServerEvent>) -> Result<()> {
++        self.events.set(tx).map_err(|_| anyhow::anyhow!("PermissionEventsAlreadyBound"))
++    }
++    pub fn bind_state(&self, version: u64, digest: String) -> Result<()> {
++        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) { bail!("InvalidStateDigest"); }
++        if !self.pending.lock().is_empty() { bail!("PendingPermissionStateChange"); }
++        *self.state.lock() = Some((version, digest)); Ok(())
++    }
++    pub fn reply(&self, id: String, action: NativeAction, allowed: bool) -> Result<()> {
++        let Some((expected, sender)) = self.pending.lock().remove(&id) else { bail!("UnknownPermissionRequest"); };
++        if expected != action { let _ = sender.send(false); bail!("PermissionIdentityMismatch"); }
++        let _ = sender.send(allowed); Ok(())
++    }
++    pub fn disconnect(&self) { self.connected.store(false, Ordering::SeqCst); self.pending.lock().clear(); }
++}
++#[async_trait]
++impl PermissionGate for TransportGate {
++    fn action(&self, ctx: &crate::alphacode_tool_core::ToolContext, name: &str, input: &Value) -> Result<NativeAction> {
++        if !self.connected.load(Ordering::SeqCst) { bail!("PermissionHostDisconnected"); }
++        if !self.identity.allowed_tools.iter().any(|t| t == name) { bail!("ToolNotAllowed"); }
++        let cwd = ctx.working_dir.as_ref().ok_or_else(|| anyhow::anyhow!("MissingManagedCwd"))?.canonicalize()?.display().to_string();
++        if cwd != self.identity.cwd { bail!("ManagedCwdMismatch"); }
++        let (policy_version, state_digest) = self.state.lock().clone().ok_or_else(|| anyhow::anyhow!("MissingHostPolicyState"))?;
++        Ok(NativeAction { session_id: ctx.session_id.clone(), tool_call_id: ctx.tool_call_id.clone(), resolved_name: name.into(), canonical_input: input.clone(), cwd, route: self.identity.effective_route.clone(), policy_version, state_digest })
++    }
++    fn started(&self, action: NativeAction) -> Result<()> {
++        if !self.connected.load(Ordering::SeqCst) { bail!("PermissionHostDisconnected"); }
++        if let Some(events) = self.events.get() {
++            events.send(crate::protocol::ServerEvent::IronbarkToolStarted { action }).map_err(|_| anyhow::anyhow!("NativeEventHostDisconnected"))?;
++        } else if managed() { bail!("MissingManagedEventTransport"); }
++        Ok(())
++    }
++    async fn check(&self, action: NativeAction) -> Result<PermissionReceipt> {
++        if !self.connected.load(Ordering::SeqCst) { bail!("PermissionHostDisconnected"); }
++        let request_id = uuid::Uuid::new_v4().to_string(); let (sender, receiver) = oneshot::channel();
++        self.pending.lock().insert(request_id.clone(), (action.clone(), sender));
++        // Task cancellation drops this guard too, closing the reply receiver.
++        let _pending = PendingPermission { pending: &self.pending, id: &request_id };
++        if self.tx.send(PermissionRequest { request_id: request_id.clone(), action: action.clone() }).is_err() { self.pending.lock().remove(&request_id); bail!("PermissionHostDisconnected"); }
++        let answer = tokio::time::timeout(self.timeout, receiver).await;
++        self.pending.lock().remove(&request_id);
++        if !matches!(answer, Ok(Ok(true))) { bail!("PermissionDeniedOrTimeout"); }
++        if !self.connected.load(Ordering::SeqCst) { bail!("PermissionHostDisconnected"); }
++        Ok(PermissionReceipt { action, consumed: Arc::new(AtomicBool::new(false)) })
++    }
++}
++static IDENTITY: OnceLock<ManagedIdentity> = OnceLock::new();
++#[derive(Debug, Clone, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ControllerIdentity { pub controller_pid: u32, pub daemon_pid: u32, pub acp_pid: u32 }
++static CONTROLLER: OnceLock<ControllerIdentity> = OnceLock::new();
++pub fn configure_controller(controller: ControllerIdentity) -> Result<()> { CONTROLLER.set(controller).map_err(|_| anyhow::anyhow!("ControllerAlreadyConfigured")) }
++static GATES: LazyLock<Mutex<HashMap<String, Arc<TransportGate>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
++pub fn managed() -> bool { IDENTITY.get().is_some() }
++pub fn identity() -> Option<&'static ManagedIdentity> { IDENTITY.get() }
++pub fn configure(identity: ManagedIdentity) -> Result<()> { IDENTITY.set(identity).map_err(|_| anyhow::anyhow!("ManagedIdentityAlreadyConfigured")) }
++pub fn session_gate(session: &str) -> Option<Arc<TransportGate>> { GATES.lock().get(session).cloned() }
++pub fn attach(session: String, gate: Arc<TransportGate>) -> Result<()> {
++    let mut gates = GATES.lock();
++    if gates.contains_key(&session) { bail!("ManagedSessionAlreadyOwned"); } gates.insert(session, gate); Ok(())
++}
++pub fn detach(session: &str) { if let Some(gate) = GATES.lock().remove(session) { gate.disconnect(); } }
++pub fn extension(gate_active: bool) -> Result<Value> {
++    let i = identity().ok_or_else(|| anyhow::anyhow!("NotIronbarkManaged"))?;
++    if !gate_active { bail!("PermissionGateInactive"); }
++    Ok(serde_json::json!({"permissionsVersion":1,"gateActive":true,"buildDigest":i.build_digest,"effectiveRoute":i.effective_route,"cwd":i.cwd,"allowedTools":i.allowed_tools,"profile":i.profile,"socket":i.socket}))
++}
++#[derive(Default)]
++pub struct ConnectionOwner { sessions: Vec<String> }
++impl ConnectionOwner {
++    pub fn owns(&self, session: &str) -> bool { self.sessions.iter().any(|s| s == session) }
++    pub fn add(&mut self, session: String) { self.sessions.push(session); }
++}
++impl Drop for ConnectionOwner { fn drop(&mut self) { for session in &self.sessions { detach(session); } } }
++/// Only the C3-owned ACP sibling may own a managed session/reply channel.
++/// Same-user socket permissions do not exclude native shell/tool descendants.
++#[cfg(target_os = "linux")]
++pub fn validate_controller_peer(stream: &crate::alphacode_app_core::transport::Stream) -> Result<()> {
++    let credentials = stream.peer_cred()?;
++    if credentials.uid() != unsafe { libc::geteuid() } { bail!("ManagedPeerUidMismatch"); }
++    let pid = credentials.pid().ok_or_else(|| anyhow::anyhow!("MissingManagedPeerPid"))?;
++    let controller = CONTROLLER.get().ok_or_else(|| anyhow::anyhow!("MissingControllerAttestation"))?;
++    if pid as u32 != controller.acp_pid || std::process::id() != controller.daemon_pid || unsafe { libc::getppid() } as u32 != controller.controller_pid { bail!("ManagedPeerIsNotControllerOwnedAcpSibling"); }
++    Ok(())
++}
++#[cfg(not(target_os = "linux"))]
++pub fn validate_controller_peer(_stream: &crate::alphacode_app_core::transport::Stream) -> Result<()> { bail!("ManagedPeerContainmentRequiresLinux"); }
++#[cfg(target_os = "linux")]
++pub fn validate_daemon_peer(stream: &crate::alphacode_app_core::transport::Stream) -> Result<()> {
++    let credentials = stream.peer_cred()?;
++    let controller = CONTROLLER.get().ok_or_else(|| anyhow::anyhow!("MissingControllerAttestation"))?;
++    if credentials.uid() != unsafe { libc::geteuid() } || credentials.pid().map(|pid| pid as u32) != Some(controller.daemon_pid) || std::process::id() != controller.acp_pid || unsafe { libc::getppid() } as u32 != controller.controller_pid { bail!("ManagedDaemonIsNotControllerOwnedSibling"); }
++    Ok(())
++}
++#[cfg(not(target_os = "linux"))]
++pub fn validate_daemon_peer(_stream: &crate::alphacode_app_core::transport::Stream) -> Result<()> { bail!("ManagedPeerContainmentRequiresLinux"); }
++/// Fixed managed shell environment: controller/provider credentials and shell
++/// startup injection must never flow into arbitrary approved tool descendants.
++pub(crate) fn set_managed_child_environment(command: &mut std::process::Command, cwd: &str) {
++    command.env_clear().env("PATH", "/usr/local/bin:/usr/bin:/bin").env("HOME", cwd).env("LANG", "C.UTF-8");
++}
++pub(crate) fn sanitize_managed_child_command(command: &mut std::process::Command) {
++    if let Some(identity) = identity() { set_managed_child_environment(command, &identity.cwd); }
++}
+diff --git i/src/alphacode_app_core/mod.rs w/src/alphacode_app_core/mod.rs
+index 58ab427..34da33a 100644
+--- i/src/alphacode_app_core/mod.rs
++++ w/src/alphacode_app_core/mod.rs
+@@ -24,6 +24,7 @@ pub use crate::alphacode_base::*;
+ 
+ // Upper layer (server / tool / agent and supporting leaves).
+ pub mod agent;
++pub mod ironbark_permissions;
+ pub mod ambient;
+ pub mod ambient_runner;
+ pub mod ambient_scheduler;
+diff --git i/src/alphacode_app_core/server.rs w/src/alphacode_app_core/server.rs
+index 5dc76d1..9027a17 100644
+--- i/src/alphacode_app_core/server.rs
++++ w/src/alphacode_app_core/server.rs
+@@ -732,7 +732,7 @@ impl Server {
+ 
+         // Initialize the background runner even when ambient mode is disabled so
+         // session-targeted scheduled tasks still have a live delivery loop.
+-        let ambient_runner = {
++        let ambient_runner = if crate::alphacode_app_core::ironbark_permissions::managed() { None } else {
+             let safety = Arc::new(crate::safety::SafetySystem::new());
+             let handle = AmbientRunnerHandle::new(safety);
+             crate::tool::ambient::init_schedule_runner(handle.clone());
+@@ -1202,11 +1202,11 @@ impl Server {
+         signal_ready_fd();
+ 
+         // Persist auxiliary discovery metadata after the server is already live.
+-        self.spawn_registry_metadata_publisher(registry_info);
++        if !crate::alphacode_app_core::ironbark_permissions::managed() { self.spawn_registry_metadata_publisher(registry_info); }
+ 
+         // Startup recovery can be expensive in multi-session reloads. Run it
+         // only after the replacement daemon is already accepting reconnects.
+-        self.recover_headless_sessions_on_startup().await;
++        if !crate::alphacode_app_core::ironbark_permissions::managed() { self.recover_headless_sessions_on_startup().await; }
+ 
+         (runtime, main_handle, debug_handle)
+     }
+@@ -1216,6 +1216,8 @@ impl Server {
+         server_start_time: Instant,
+         temporary_server_policy: Option<lifecycle::TemporaryServerPolicy>,
+     ) {
++        // Core C3 owns managed lifetime; no autonomous memory/cloud/swarm/background work.
++        if crate::alphacode_app_core::ironbark_permissions::managed() { return; }
+         // Preload the embedding model in background so warm startups get fast
+         // memory recall. On a cold install, skip eager preload because the
+         // first-time model download can make the first spawned client look hung
+@@ -2334,6 +2336,7 @@ impl Server {
+     /// The runtime task scope owns both the listener and client accept loop so
+     /// server shutdown can cancel and join them with the other connection work.
+     async fn spawn_gateway(&self, runtime: ServerRuntime) {
++        if crate::alphacode_app_core::ironbark_permissions::managed() { return; }
+         let config = if let Some(override_config) = &self.gateway_config_override {
+             override_config.clone()
+         } else {
+diff --git i/src/alphacode_app_core/server/client_actions.rs w/src/alphacode_app_core/server/client_actions.rs
+index db832b3..cd8aa0c 100644
+--- i/src/alphacode_app_core/server/client_actions.rs
++++ w/src/alphacode_app_core/server/client_actions.rs
+@@ -316,6 +316,8 @@ pub(super) fn handle_run_subagent(
+         };
+ 
+         let ctx = crate::tool::ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id,
+             message_id,
+             tool_call_id: tool_call_id.clone(),
+diff --git i/src/alphacode_app_core/server/client_lifecycle.rs w/src/alphacode_app_core/server/client_lifecycle.rs
+index aed15aa..0e1d4f6 100644
+--- i/src/alphacode_app_core/server/client_lifecycle.rs
++++ w/src/alphacode_app_core/server/client_lifecycle.rs
+@@ -367,6 +367,9 @@ pub(super) async fn handle_client(
+     await_members_runtime: AwaitMembersRuntime,
+     swarm_mutation_runtime: SwarmMutationRuntime,
+ ) -> Result<()> {
++    if crate::alphacode_app_core::ironbark_permissions::managed() {
++        crate::alphacode_app_core::ironbark_permissions::validate_controller_peer(&stream)?;
++    }
+     let (reader, writer) = stream.into_split();
+     let mut reader = BufReader::new(reader);
+     let writer = Arc::new(Mutex::new(writer));
+@@ -409,6 +412,14 @@ pub(super) async fn handle_client(
+ 
+         match decode_request(&line) {
+             Ok(request) => {
++                if let Request::IronbarkIdentity { id } = &request {
++                    let identity = crate::alphacode_app_core::ironbark_permissions::extension(true)?;
++                    write_direct_event(&writer, &ServerEvent::IronbarkIdentity { id: *id, identity }).await?;
++                    continue;
++                }
++                if crate::alphacode_app_core::ironbark_permissions::managed() && request.is_lightweight_control_request() {
++                    anyhow::bail!("ManagedLightweightControlDenied");
++                }
+                 if request.is_lightweight_control_request() {
+                     handle_lightweight_control_request(
+                         request,
+@@ -488,7 +499,7 @@ pub(super) async fn handle_client(
+     let registry = Registry::new(provider.clone()).await;
+     let registry_ms = t0.elapsed().as_millis();
+ 
+-    let mut swarm_enabled = crate::config::config().features.swarm;
++    let mut swarm_enabled = !crate::alphacode_app_core::ironbark_permissions::managed() && crate::config::config().features.swarm;
+     let mut last_available_models_snapshot: Option<String> = None;
+     const MAX_LIVE_AVAILABLE_MODELS_UPDATE_BYTES: usize = 64 * 1024;
+ 
+@@ -581,6 +592,7 @@ pub(super) async fn handle_client(
+     // Per-client event channel (not shared with other clients)
+     let (client_event_tx, mut client_event_rx) =
+         tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
++    let mut managed_owner = crate::alphacode_app_core::ironbark_permissions::ConnectionOwner::default();
+ 
+     // Spawn event forwarder for this client only
+     let writer_clone = Arc::clone(&writer);
+@@ -942,6 +954,17 @@ pub(super) async fn handle_client(
+             }
+         };
+         let request_decoded_at = Instant::now();
++        if crate::alphacode_app_core::ironbark_permissions::managed() && matches!(&request, Request::Message { .. }) {
++            if !managed_owner.owns(&client_session_id) || crate::alphacode_app_core::ironbark_permissions::session_gate(&client_session_id).is_none() { anyhow::bail!("ManagedPromptRequiresHostBoundPermissionGate"); }
++            let identity = crate::alphacode_app_core::ironbark_permissions::identity().unwrap();
++            let actual = agent.try_lock().map_err(|_| anyhow::anyhow!("ManagedSessionBusy"))?;
++            if actual.provider_model() != identity.effective_route["model_id"].as_str().unwrap_or_default() || actual.working_dir() != Some(identity.cwd.as_str()) { anyhow::bail!("ManagedPromptIdentityMismatch"); }
++        }
++        if crate::alphacode_app_core::ironbark_permissions::managed()
++            && !matches!(&request, Request::Message { .. } | Request::Subscribe { .. } | Request::ResumeSession { .. } | Request::GetHistory { .. } | Request::GetCompactedHistory { .. } | Request::GetState { .. } | Request::Cancel { .. } | Request::Ping { .. } | Request::IronbarkIdentity { .. } | Request::IronbarkBind { .. } | Request::IronbarkPermissionReply { .. }) {
++            write_direct_event(&writer, &ServerEvent::Error { id: request.id(), message: "ManagedControlRequestDenied".into(), retry_after_secs: None }).await?;
++            continue;
++        }
+         let request_id = request.id();
+         let request_kind = request_type_from_line(&line);
+         let request_lifecycle_logged = !request_type_is_read_only(&request_kind);
+@@ -1111,6 +1134,48 @@ pub(super) async fn handle_client(
+         }
+ 
+         match request {
++            Request::IronbarkIdentity { id } => {
++                write_direct_event(&writer, &ServerEvent::IronbarkIdentity { id, identity: crate::alphacode_app_core::ironbark_permissions::extension(true)? }).await?;
++            }
++            Request::IronbarkBind { id, policy_version, state_digest } => {
++                use crate::alphacode_app_core::ironbark_permissions as permissions;
++                let identity = permissions::identity().ok_or_else(|| anyhow::anyhow!("NotManaged"))?.clone();
++                {
++                    let actual = agent.try_lock().map_err(|_| anyhow::anyhow!("ManagedSessionBusy"))?;
++                    if actual.provider_model() != identity.effective_route["model_id"].as_str().unwrap_or_default() { anyhow::bail!("ManagedResolvedRouteMismatch"); }
++                    if actual.working_dir() != Some(identity.cwd.as_str()) { anyhow::bail!("ManagedResolvedCwdMismatch"); }
++                    let mut names = actual.tool_names().await;
++                    let mut expected = identity.allowed_tools.clone();
++                    names.sort(); expected.sort();
++                    if names != expected { anyhow::bail!("ManagedResolvedToolsetMismatch"); }
++                }
++                let gate = if let Some(gate) = permissions::session_gate(&client_session_id) {
++                    if !managed_owner.owns(&client_session_id) { anyhow::bail!("ManagedSessionOwnedByOtherConnection"); }
++                    gate
++                } else {
++                    let (gate, mut requests) = permissions::TransportGate::new(identity, Duration::from_secs(30));
++                    gate.bind_events(client_event_tx.clone())?;
++                    permissions::attach(client_session_id.clone(), gate.clone())?;
++                    managed_owner.add(client_session_id.clone());
++                    let tx = client_event_tx.clone();
++                    let weak = Arc::downgrade(&gate);
++                    tokio::spawn(async move {
++                        while let Some(request) = requests.recv().await {
++                            if tx.send(ServerEvent::IronbarkPermission { request_id: request.request_id, action: request.action }).is_err() { break; }
++                        }
++                        if let Some(gate) = weak.upgrade() { gate.disconnect(); }
++                    });
++                    gate
++                };
++                gate.bind_state(policy_version, state_digest)?;
++                write_direct_event(&writer, &ServerEvent::Done { id }).await?;
++            }
++            Request::IronbarkPermissionReply { id, request_id, action, allowed } => {
++                if !managed_owner.owns(&client_session_id) { anyhow::bail!("PermissionReplyWrongOwner"); }
++                let gate = crate::alphacode_app_core::ironbark_permissions::session_gate(&client_session_id).ok_or_else(|| anyhow::anyhow!("MissingPermissionGate"))?;
++                gate.reply(request_id, action, allowed)?;
++                write_direct_event(&writer, &ServerEvent::Done { id }).await?;
++            }
+             Request::Message {
+                 id,
+                 content,
+diff --git i/src/alphacode_app_core/server/debug.rs w/src/alphacode_app_core/server/debug.rs
+index 82d50f4..9356e9e 100644
+--- i/src/alphacode_app_core/server/debug.rs
++++ w/src/alphacode_app_core/server/debug.rs
+@@ -277,6 +277,7 @@ pub(super) async fn handle_debug_client(
+     shutdown_signals: Arc<RwLock<HashMap<String, InterruptSignal>>>,
+     soft_interrupt_queues: super::SessionInterruptQueues,
+ ) -> Result<()> {
++    if crate::alphacode_app_core::ironbark_permissions::managed() { anyhow::bail!("ManagedDebugControlDenied"); }
+     let (reader, mut writer) = stream.into_split();
+     let mut reader = BufReader::new(reader);
+     let mut line = String::new();
+diff --git i/src/alphacode_app_core/server/headless.rs w/src/alphacode_app_core/server/headless.rs
+index b58846d..e39077f 100644
+--- i/src/alphacode_app_core/server/headless.rs
++++ w/src/alphacode_app_core/server/headless.rs
+@@ -36,6 +36,9 @@ pub(super) async fn create_headless_session(
+     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
+     report_back_to_session_id: Option<String>,
+ ) -> Result<String> {
++    if crate::alphacode_app_core::ironbark_permissions::managed() {
++        anyhow::bail!("ManagedChildSessionRequiresCoreOwnedWorker");
++    }
+     let memory_enabled = crate::config::config().features.memory;
+     let swarm_enabled = crate::config::config().features.swarm;
+ 
+diff --git i/src/alphacode_app_core/tool/agentgrep.rs w/src/alphacode_app_core/tool/agentgrep.rs
+index 02332f6..03fdb01 100644
+--- i/src/alphacode_app_core/tool/agentgrep.rs
++++ w/src/alphacode_app_core/tool/agentgrep.rs
+@@ -240,6 +240,8 @@ impl Tool for AgentGrepTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: AgentGrepInput = serde_json::from_value(input)?;
+         // The search shells out to ripgrep and walks/reads files (and for
+         // trace/outline modes also loads the session and reads more files),
+diff --git i/src/alphacode_app_core/tool/amass.rs w/src/alphacode_app_core/tool/amass.rs
+index e2b8d2c..7797fee 100644
+--- i/src/alphacode_app_core/tool/amass.rs
++++ w/src/alphacode_app_core/tool/amass.rs
+@@ -73,6 +73,8 @@ impl Tool for AmassTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: AmassInput = normalize_amass_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/ambient.rs w/src/alphacode_app_core/tool/ambient.rs
+index 690f01f..1ef3dd5 100644
+--- i/src/alphacode_app_core/tool/ambient.rs
++++ w/src/alphacode_app_core/tool/ambient.rs
+@@ -203,6 +203,8 @@ impl Tool for EndAmbientCycleTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: EndCycleInput = serde_json::from_value(input)?;
+ 
+         let next_schedule = params.next_schedule.map(|ns| ScheduleRequest {
+@@ -337,6 +339,8 @@ impl Tool for ScheduleAmbientTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: ScheduleInput = serde_json::from_value(input)?;
+ 
+         let wake_at = if let Some(ref ts) = params.wake_at {
+@@ -638,6 +642,8 @@ impl Tool for RequestPermissionTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         ensure_ambient_session(&ctx)?;
+ 
+         let params: RequestPermissionInput = serde_json::from_value(input)?;
+@@ -807,6 +813,8 @@ impl Tool for ScheduleTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: ScheduleToolInput = serde_json::from_value(input)?;
+ 
+         match params.action.as_deref().unwrap_or("create") {
+@@ -1071,6 +1079,8 @@ impl Tool for SendChannelMessageTool {
+     }
+ 
+     async fn execute(&self, args: Value, _context: ToolContext) -> Result<ToolOutput> {
++        let args = _context.normalize_for_permission(args)?;
++        _context.enforce_permission(self.name(), &args).await?;
+         let message = args
+             .get("message")
+             .and_then(|v| v.as_str())
+diff --git i/src/alphacode_app_core/tool/ambient/tests.rs w/src/alphacode_app_core/tool/ambient/tests.rs
+index b727679..786fdf8 100644
+--- i/src/alphacode_app_core/tool/ambient/tests.rs
++++ w/src/alphacode_app_core/tool/ambient/tests.rs
+@@ -267,6 +267,8 @@ async fn test_request_permission_rejects_non_ambient_session() {
+         "rationale": "Fix typo"
+     });
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "normal_session_test".to_string(),
+         message_id: "msg_1".to_string(),
+         tool_call_id: "call_1".to_string(),
+@@ -424,6 +426,8 @@ async fn test_schedule_tool_defaults_to_resuming_originating_session() {
+         "wake_in_minutes": 5
+     });
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "origin_session".to_string(),
+         message_id: "msg_1".to_string(),
+         tool_call_id: "call_1".to_string(),
+@@ -481,6 +485,8 @@ async fn test_schedule_tool_requires_time() {
+         "task": "Do something eventually"
+     });
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "test_session".to_string(),
+         message_id: "msg_1".to_string(),
+         tool_call_id: "call_1".to_string(),
+diff --git i/src/alphacode_app_core/tool/anew.rs w/src/alphacode_app_core/tool/anew.rs
+index cd20436..314e66f 100644
+--- i/src/alphacode_app_core/tool/anew.rs
++++ w/src/alphacode_app_core/tool/anew.rs
+@@ -66,6 +66,8 @@ impl Tool for AnewTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: AnewInput = normalize_anew_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/apply_patch.rs w/src/alphacode_app_core/tool/apply_patch.rs
+index 81eca8c..100871d 100644
+--- i/src/alphacode_app_core/tool/apply_patch.rs
++++ w/src/alphacode_app_core/tool/apply_patch.rs
+@@ -110,6 +110,8 @@ impl Tool for ApplyPatchTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // Tolerant extraction first (alias-aware error), then strict struct for
+         // the remaining optional fields.
+         let (patch_text, intent) = extract_patch_text(&input)?;
+diff --git i/src/alphacode_app_core/tool/assetfinder.rs w/src/alphacode_app_core/tool/assetfinder.rs
+index 4040622..71cb8fe 100644
+--- i/src/alphacode_app_core/tool/assetfinder.rs
++++ w/src/alphacode_app_core/tool/assetfinder.rs
+@@ -50,6 +50,8 @@ impl Tool for AssetfinderTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: AssetfinderInput = normalize_assetfinder_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/bash.rs w/src/alphacode_app_core/tool/bash.rs
+index 7e56d1e..4833f82 100644
+--- i/src/alphacode_app_core/tool/bash.rs
++++ w/src/alphacode_app_core/tool/bash.rs
+@@ -647,7 +647,8 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
+     }
+     #[cfg(not(windows))]
+     {
+-        let mut cmd = TokioCommand::new("bash");
++        let mut cmd = TokioCommand::new(if crate::alphacode_app_core::ironbark_permissions::managed() { "/usr/bin/bash" } else { "bash" });
++        crate::alphacode_app_core::ironbark_permissions::sanitize_managed_child_command(cmd.as_std_mut());
+         cmd.arg("-c").arg(cmd_str);
+         configure_tool_scratch(&mut cmd);
+         cmd
+@@ -656,8 +657,10 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
+ 
+ #[cfg(unix)]
+ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
+-    let mut cmd = StdCommand::new("bash");
+-    cmd.arg("-lc")
++    let managed = crate::alphacode_app_core::ironbark_permissions::managed();
++    let mut cmd = StdCommand::new(if managed { "/usr/bin/bash" } else { "bash" });
++    crate::alphacode_app_core::ironbark_permissions::sanitize_managed_child_command(&mut cmd);
++    cmd.arg(if managed { "-c" } else { "-lc" })
+         .arg(
+             r#"eval "$ALPHACODE_RELOAD_DETACH_COMMAND"; status=$?; printf '\n--- Command finished with exit code: %s ---\n' "$status"; exit "$status""#,
+         )
+@@ -809,6 +812,8 @@ mod utf8_truncation_tests {
+             .execute(
+                 json!({"command": "   "}),
+                 ToolContext {
++                    permission_gate: None,
++                    permission_receipt: None,
+                     session_id: "bash-empty-command-test".to_string(),
+                     message_id: "message".to_string(),
+                     tool_call_id: "tool".to_string(),
+@@ -1137,6 +1142,8 @@ impl Tool for BashTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // Alias-tolerant recovery first: models routinely send `cmd`/`script`,
+         // capitalise the key, or emit the command as a bare string. Anything
+         // else falls through to a key-listing error the retry can act on.
+diff --git i/src/alphacode_app_core/tool/batch.rs w/src/alphacode_app_core/tool/batch.rs
+index 51e2779..8adda0d 100644
+--- i/src/alphacode_app_core/tool/batch.rs
++++ w/src/alphacode_app_core/tool/batch.rs
+@@ -256,6 +256,8 @@ impl Tool for BatchTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let input = normalize_batch_input(input);
+         let params: BatchInput = serde_json::from_value(input)?;
+ 
+@@ -496,6 +498,8 @@ mod tests {
+         }
+ 
+         async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++            let input = _ctx.normalize_for_permission(input)?;
++            _ctx.enforce_permission(self.name(), &input).await?;
+             let id = input
+                 .get("id")
+                 .and_then(Value::as_str)
+@@ -518,6 +522,8 @@ mod tests {
+ 
+     fn probe_context() -> ToolContext {
+         ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: "batch-scheduler-test".to_string(),
+             message_id: "message".to_string(),
+             tool_call_id: "batch".to_string(),
+diff --git i/src/alphacode_app_core/tool/bg.rs w/src/alphacode_app_core/tool/bg.rs
+index 9a47384..03ca959 100644
+--- i/src/alphacode_app_core/tool/bg.rs
++++ w/src/alphacode_app_core/tool/bg.rs
+@@ -503,6 +503,8 @@ impl Tool for BgTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: BgInput = serde_json::from_value(input)?;
+         let action = resolve_action(&params)?;
+         let manager = background::global();
+diff --git i/src/alphacode_app_core/tool/browser.rs w/src/alphacode_app_core/tool/browser.rs
+index 18ea48a..3738913 100644
+--- i/src/alphacode_app_core/tool/browser.rs
++++ w/src/alphacode_app_core/tool/browser.rs
+@@ -831,6 +831,8 @@ impl Tool for BrowserTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // Keep the raw input for the error path: a bare "invalid input" with
+         // no field-level reason sends the agent guessing (and retrying blind).
+         let params: BrowserInput = match serde_json::from_value(input.clone()) {
+diff --git i/src/alphacode_app_core/tool/cariddi.rs w/src/alphacode_app_core/tool/cariddi.rs
+index d8b6b13..270bbad 100644
+--- i/src/alphacode_app_core/tool/cariddi.rs
++++ w/src/alphacode_app_core/tool/cariddi.rs
+@@ -255,6 +255,8 @@ impl Tool for CariddiTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: CariddiInput = normalize_cariddi_input(&input)?;
+         if params.url.is_empty() && params.input.is_none() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/clipboard.rs w/src/alphacode_app_core/tool/clipboard.rs
+index cc8d259..765361d 100644
+--- i/src/alphacode_app_core/tool/clipboard.rs
++++ w/src/alphacode_app_core/tool/clipboard.rs
+@@ -40,6 +40,8 @@ impl Tool for ClipboardTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let action = input
+             .get("action")
+             .and_then(|v| v.as_str())
+diff --git i/src/alphacode_app_core/tool/communicate.rs w/src/alphacode_app_core/tool/communicate.rs
+index 2d31d11..b96b26a 100644
+--- i/src/alphacode_app_core/tool/communicate.rs
++++ w/src/alphacode_app_core/tool/communicate.rs
+@@ -2381,6 +2381,8 @@ impl Tool for CommunicateTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let mut params: CommunicateInput = serde_json::from_value(input)?;
+ 
+         // `to_session` and `target_session` both name a single session id. Historically
+diff --git i/src/alphacode_app_core/tool/communicate_tests/input_format.rs w/src/alphacode_app_core/tool/communicate_tests/input_format.rs
+index b20f536..8fdc500 100644
+--- i/src/alphacode_app_core/tool/communicate_tests/input_format.rs
++++ w/src/alphacode_app_core/tool/communicate_tests/input_format.rs
+@@ -178,6 +178,8 @@ fn format_tool_summary_includes_call_count() {
+ #[test]
+ fn format_members_includes_status_and_detail() {
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "sess-self".to_string(),
+         message_id: "msg-1".to_string(),
+         tool_call_id: "call-1".to_string(),
+diff --git i/src/alphacode_app_core/tool/computer/mod.rs w/src/alphacode_app_core/tool/computer/mod.rs
+index 45610c5..5e586b6 100644
+--- i/src/alphacode_app_core/tool/computer/mod.rs
++++ w/src/alphacode_app_core/tool/computer/mod.rs
+@@ -251,6 +251,8 @@ impl Tool for ComputerTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let parsed: ComputerInput =
+             serde_json::from_value(input).context("invalid `macos_computer_use` tool input")?;
+         tokio::task::spawn_blocking(move || run(parsed))
+diff --git i/src/alphacode_app_core/tool/computer/tests.rs w/src/alphacode_app_core/tool/computer/tests.rs
+index eff9717..568c061 100644
+--- i/src/alphacode_app_core/tool/computer/tests.rs
++++ w/src/alphacode_app_core/tool/computer/tests.rs
+@@ -6,6 +6,8 @@ use crate::alphacode_tool_core::{ToolContext, ToolExecutionMode};
+ 
+ fn ctx() -> ToolContext {
+     ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "test".into(),
+         message_id: "test".into(),
+         tool_call_id: "test".into(),
+diff --git i/src/alphacode_app_core/tool/conversation_search.rs w/src/alphacode_app_core/tool/conversation_search.rs
+index e5ed794..b80223e 100644
+--- i/src/alphacode_app_core/tool/conversation_search.rs
++++ w/src/alphacode_app_core/tool/conversation_search.rs
+@@ -85,6 +85,8 @@ impl Tool for ConversationSearchTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: SearchInput = serde_json::from_value(input)?;
+         let manager = self.compaction.read().await;
+         let session_messages = load_session_messages(&ctx.session_id);
+@@ -351,6 +353,8 @@ mod tests {
+         session.save().unwrap();
+ 
+         let ctx = ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id,
+             message_id: "test-message".to_string(),
+             tool_call_id: "test-tool-call".to_string(),
+diff --git i/src/alphacode_app_core/tool/corsy.rs w/src/alphacode_app_core/tool/corsy.rs
+index 980ba25..449aecb 100644
+--- i/src/alphacode_app_core/tool/corsy.rs
++++ w/src/alphacode_app_core/tool/corsy.rs
+@@ -78,6 +78,8 @@ impl Tool for CorsyTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: CorsyInput = normalize_corsy_input(&input)?;
+         if params.url.is_empty() && params.input.is_none() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/crlfuzz.rs w/src/alphacode_app_core/tool/crlfuzz.rs
+index 93caadd..3eead27 100644
+--- i/src/alphacode_app_core/tool/crlfuzz.rs
++++ w/src/alphacode_app_core/tool/crlfuzz.rs
+@@ -220,6 +220,8 @@ impl Tool for CrlfuzzTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: CrlfuzzInput = normalize_crlfuzz_input(&input)?;
+         if params.url.is_empty() && params.input.is_none() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/cron.rs w/src/alphacode_app_core/tool/cron.rs
+index 6931f1f..94ae469 100644
+--- i/src/alphacode_app_core/tool/cron.rs
++++ w/src/alphacode_app_core/tool/cron.rs
+@@ -165,6 +165,8 @@ impl Tool for CronTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let action = input
+             .get("action")
+             .and_then(|v| v.as_str())
+diff --git i/src/alphacode_app_core/tool/ctf_tools.rs w/src/alphacode_app_core/tool/ctf_tools.rs
+index f7490f2..91cdc9c 100644
+--- i/src/alphacode_app_core/tool/ctf_tools.rs
++++ w/src/alphacode_app_core/tool/ctf_tools.rs
+@@ -206,6 +206,8 @@ impl Tool for PwntoolsTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: PwntoolsInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid pwntools input: {}", e))?;
+ 
+@@ -315,6 +317,8 @@ impl Tool for BinwalkTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: BinwalkInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid binwalk input: {}", e))?;
+ 
+@@ -399,6 +403,8 @@ impl Tool for SteghideTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: SteghideInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid steghide input: {}", e))?;
+ 
+@@ -488,6 +494,8 @@ impl Tool for Radare2Tool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: Radare2Input = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid radare2 input: {}", e))?;
+ 
+@@ -562,6 +570,8 @@ impl Tool for Z3Tool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: Z3Input = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid z3 input: {}", e))?;
+ 
+@@ -664,6 +674,8 @@ impl Tool for ExiftoolTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: ExiftoolInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid exiftool input: {}", e))?;
+ 
+@@ -744,6 +756,8 @@ impl Tool for VolatilityTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: VolatilityInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid volatility input: {}", e))?;
+ 
+@@ -828,6 +842,8 @@ impl Tool for TsharkTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: TsharkInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid tshark input: {}", e))?;
+ 
+@@ -930,6 +946,8 @@ impl Tool for GhidraTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: GhidraInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid ghidra input: {}", e))?;
+ 
+@@ -1041,6 +1059,8 @@ impl Tool for AngrTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: AngrInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid angr input: {}", e))?;
+ 
+@@ -1149,6 +1169,8 @@ impl Tool for HashcatTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: HashcatInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid hashcat input: {}", e))?;
+ 
+@@ -1264,6 +1286,8 @@ impl Tool for JohnTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: JohnInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid john input: {}", e))?;
+ 
+@@ -1364,6 +1388,8 @@ impl Tool for FlagScannerTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: FlagScannerInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid flag_scanner input: {}", e))?;
+ 
+@@ -1566,6 +1592,8 @@ impl Tool for ChallengeClassifierTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: ChallengeClassifierInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid challenge_classifier input: {}", e))?;
+ 
+@@ -1767,6 +1795,8 @@ impl Tool for CtfAutoSolverTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: CtfAutoSolverInput = serde_json::from_value(input.clone())
+             .map_err(|e| anyhow::anyhow!("Invalid ctf_auto_solver input: {}", e))?;
+ 
+diff --git i/src/alphacode_app_core/tool/dalfox.rs w/src/alphacode_app_core/tool/dalfox.rs
+index 9a40ebe..801ea3e 100644
+--- i/src/alphacode_app_core/tool/dalfox.rs
++++ w/src/alphacode_app_core/tool/dalfox.rs
+@@ -249,6 +249,8 @@ impl Tool for DalfoxTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: DalfoxInput = normalize_dalfox_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/debug_socket.rs w/src/alphacode_app_core/tool/debug_socket.rs
+index dcd32bb..fc3f823 100644
+--- i/src/alphacode_app_core/tool/debug_socket.rs
++++ w/src/alphacode_app_core/tool/debug_socket.rs
+@@ -72,6 +72,8 @@ impl Tool for DebugSocketTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: DebugSocketInput = serde_json::from_value(input)?;
+         let timeout_secs = params.timeout_secs.unwrap_or(30);
+         let session_label = params
+diff --git i/src/alphacode_app_core/tool/desktop/mod.rs w/src/alphacode_app_core/tool/desktop/mod.rs
+index 17248ca..338a1ef 100644
+--- i/src/alphacode_app_core/tool/desktop/mod.rs
++++ w/src/alphacode_app_core/tool/desktop/mod.rs
+@@ -232,6 +232,8 @@ impl Tool for DesktopTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let parsed: DesktopInput =
+             serde_json::from_value(input).context("invalid `desktop` tool input")?;
+         let timeout = Duration::from_millis(parsed.timeout_ms.unwrap_or(10_000).min(60_000));
+diff --git i/src/alphacode_app_core/tool/discover.rs w/src/alphacode_app_core/tool/discover.rs
+index 0158fa1..1d61f5d 100644
+--- i/src/alphacode_app_core/tool/discover.rs
++++ w/src/alphacode_app_core/tool/discover.rs
+@@ -669,6 +669,8 @@ impl Tool for DiscoverToolsTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let started_at = Instant::now();
+         let request_id = uuid::Uuid::new_v4().to_string();
+         let config = crate::config::config();
+@@ -2043,6 +2045,8 @@ mod tests {
+ 
+     fn test_ctx() -> crate::tool::ToolContext {
+         crate::tool::ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: "test".into(),
+             message_id: "test".into(),
+             tool_call_id: "test".into(),
+diff --git i/src/alphacode_app_core/tool/dnsx.rs w/src/alphacode_app_core/tool/dnsx.rs
+index 618ab9d..e6cbb94 100644
+--- i/src/alphacode_app_core/tool/dnsx.rs
++++ w/src/alphacode_app_core/tool/dnsx.rs
+@@ -117,6 +117,8 @@ impl Tool for DnsxTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: DnsxInput = serde_json::from_value(input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/doctor.rs w/src/alphacode_app_core/tool/doctor.rs
+index 204f67e..dca0636 100644
+--- i/src/alphacode_app_core/tool/doctor.rs
++++ w/src/alphacode_app_core/tool/doctor.rs
+@@ -59,6 +59,8 @@ impl Tool for DoctorTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: DoctorInput = serde_json::from_value(input)?;
+         let work_dir = ctx.working_dir.as_deref();
+ 
+@@ -239,6 +241,8 @@ mod tests {
+ 
+     fn test_ctx() -> ToolContext {
+         ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: "test".to_string(),
+             message_id: "test".to_string(),
+             tool_call_id: "test".to_string(),
+diff --git i/src/alphacode_app_core/tool/edit.rs w/src/alphacode_app_core/tool/edit.rs
+index 70628ec..6f63c58 100644
+--- i/src/alphacode_app_core/tool/edit.rs
++++ w/src/alphacode_app_core/tool/edit.rs
+@@ -76,6 +76,8 @@ impl Tool for EditTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: EditInput = serde_json::from_value(input)?;
+ 
+         if params.old_string == params.new_string {
+diff --git i/src/alphacode_app_core/tool/feroxbuster.rs w/src/alphacode_app_core/tool/feroxbuster.rs
+index 87e3d8b..304d9b2 100644
+--- i/src/alphacode_app_core/tool/feroxbuster.rs
++++ w/src/alphacode_app_core/tool/feroxbuster.rs
+@@ -133,6 +133,8 @@ impl Tool for FeroxbusterTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: FeroxbusterInput = normalize_feroxbuster_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/ffuf.rs w/src/alphacode_app_core/tool/ffuf.rs
+index 70b8370..b589343 100644
+--- i/src/alphacode_app_core/tool/ffuf.rs
++++ w/src/alphacode_app_core/tool/ffuf.rs
+@@ -95,6 +95,8 @@ impl Tool for FfufTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: FfufInput = serde_json::from_value(input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/gau.rs w/src/alphacode_app_core/tool/gau.rs
+index d86561b..fa8e216 100644
+--- i/src/alphacode_app_core/tool/gau.rs
++++ w/src/alphacode_app_core/tool/gau.rs
+@@ -83,6 +83,8 @@ impl Tool for GauTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: GauInput = serde_json::from_value(input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/gf.rs w/src/alphacode_app_core/tool/gf.rs
+index 4547591..62af4e7 100644
+--- i/src/alphacode_app_core/tool/gf.rs
++++ w/src/alphacode_app_core/tool/gf.rs
+@@ -68,6 +68,8 @@ impl Tool for GfTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: GfInput = normalize_gf_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/gmail.rs w/src/alphacode_app_core/tool/gmail.rs
+index 12fe7dd..de58847 100644
+--- i/src/alphacode_app_core/tool/gmail.rs
++++ w/src/alphacode_app_core/tool/gmail.rs
+@@ -98,6 +98,8 @@ impl Tool for GmailTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: GmailInput = serde_json::from_value(input)?;
+         let max = params.max_results.unwrap_or(10).min(50);
+ 
+diff --git i/src/alphacode_app_core/tool/goal.rs w/src/alphacode_app_core/tool/goal.rs
+index 931783f..fb76ce1 100644
+--- i/src/alphacode_app_core/tool/goal.rs
++++ w/src/alphacode_app_core/tool/goal.rs
+@@ -142,6 +142,8 @@ impl Tool for InitiativeTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: GoalInput = serde_json::from_value(input)?;
+         let action_label = params.action.clone();
+         let goal_id_label = params.id.clone().unwrap_or_else(|| "<none>".to_string());
+diff --git i/src/alphacode_app_core/tool/gobuster.rs w/src/alphacode_app_core/tool/gobuster.rs
+index f8969d6..3f55511 100644
+--- i/src/alphacode_app_core/tool/gobuster.rs
++++ w/src/alphacode_app_core/tool/gobuster.rs
+@@ -101,6 +101,8 @@ impl Tool for GobusterTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: GobusterInput = normalize_gobuster_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/gospider.rs w/src/alphacode_app_core/tool/gospider.rs
+index 6e7d23e..ffe19de 100644
+--- i/src/alphacode_app_core/tool/gospider.rs
++++ w/src/alphacode_app_core/tool/gospider.rs
+@@ -129,6 +129,8 @@ impl Tool for GospiderTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: GospiderInput = normalize_gospider_input(&input)?;
+         if params.url.is_empty() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/hakrawler.rs w/src/alphacode_app_core/tool/hakrawler.rs
+index 26eed89..bbe6641 100644
+--- i/src/alphacode_app_core/tool/hakrawler.rs
++++ w/src/alphacode_app_core/tool/hakrawler.rs
+@@ -119,6 +119,8 @@ impl Tool for HakrawlerTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: HakrawlerInput = normalize_hakrawler_input(&input)?;
+         if params.url.is_empty() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/httpflow.rs w/src/alphacode_app_core/tool/httpflow.rs
+index 4f12e43..5ae075a 100644
+--- i/src/alphacode_app_core/tool/httpflow.rs
++++ w/src/alphacode_app_core/tool/httpflow.rs
+@@ -148,6 +148,8 @@ impl Tool for HttpFlowTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // Be maximally tolerant of what providers send:
+         // - stringified JSON (`"{\"action\": ...}"`, double-encoded)
+         // - single-element array wrapping the object
+diff --git i/src/alphacode_app_core/tool/httprobe.rs w/src/alphacode_app_core/tool/httprobe.rs
+index ffd4150..6d29819 100644
+--- i/src/alphacode_app_core/tool/httprobe.rs
++++ w/src/alphacode_app_core/tool/httprobe.rs
+@@ -196,6 +196,8 @@ impl Tool for HttprobeTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: HttprobeInput = normalize_httprobe_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/httpx.rs w/src/alphacode_app_core/tool/httpx.rs
+index ff110eb..24f5966 100644
+--- i/src/alphacode_app_core/tool/httpx.rs
++++ w/src/alphacode_app_core/tool/httpx.rs
+@@ -123,6 +123,8 @@ impl Tool for HttpxTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: HttpxInput = normalize_httpx_input(&input)?;
+         if params.targets.is_empty() && params.list.is_none() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/invalid.rs w/src/alphacode_app_core/tool/invalid.rs
+index 9b3ab3d..c4e3204 100644
+--- i/src/alphacode_app_core/tool/invalid.rs
++++ w/src/alphacode_app_core/tool/invalid.rs
+@@ -47,6 +47,8 @@ impl Tool for InvalidTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: InvalidInput = serde_json::from_value(input)?;
+         Ok(ToolOutput::new(format!(
+             "Invalid tool invocation for '{}': {}",
+diff --git i/src/alphacode_app_core/tool/ironbark_permission_tests.rs w/src/alphacode_app_core/tool/ironbark_permission_tests.rs
+new file mode 100644
+index 0000000..bc73d40
+--- /dev/null
++++ w/src/alphacode_app_core/tool/ironbark_permission_tests.rs
+@@ -0,0 +1,105 @@
++use super::*;
++use crate::alphacode_app_core::ironbark_permissions::*;
++use crate::alphacode_tool_core::{ToolContext, ToolExecutionMode};
++use serde_json::json;
++use std::sync::Arc;
++
++fn ctx(root: &std::path::Path, gate: Arc<dyn PermissionGate>) -> ToolContext {
++    ToolContext { session_id: uuid::Uuid::new_v4().to_string(), message_id: "m".into(), tool_call_id: "t".into(), working_dir: Some(root.into()), stdin_request_tx: None, graceful_shutdown_signal: None, execution_mode: ToolExecutionMode::Direct, permission_gate: Some(gate), permission_receipt: None }
++}
++fn gate(root: &std::path::Path) -> (Arc<TransportGate>, tokio::sync::mpsc::UnboundedReceiver<PermissionRequest>) {
++    let (gate, requests) = TransportGate::new(ManagedIdentity { build_digest: "a".repeat(64), effective_route: json!({"connection_id":"owned","model_id":"fixed","harness":"alphacode"}), cwd: root.canonicalize().unwrap().display().to_string(), allowed_tools: vec!["write".into()], profile: "/owned".into(), socket: "/owned/daemon.sock".into() }, std::time::Duration::from_millis(30));
++    gate.bind_state(1, "b".repeat(64)).unwrap(); (gate, requests)
++}
++#[tokio::test]
++async fn ironbark_permission_direct_execution_cannot_skip_gate() {
++    let root = tempfile::tempdir().unwrap(); let file = root.path().join("protected"); std::fs::write(&file, "original").unwrap();
++    let protected_file_before = std::fs::read(&file).unwrap();
++    let (gate, mut requests) = gate(root.path()); let context = ctx(root.path(), gate.clone());
++    let (events, mut observed) = tokio::sync::mpsc::unbounded_channel();
++    gate.bind_events(events).unwrap();
++    let reply = tokio::spawn(async move { let req = requests.recv().await.unwrap(); gate.reply(req.request_id, req.action, false).unwrap(); });
++    assert!(write::WriteTool::new().execute(json!({"file_path":"protected","content":"changed"}), context).await.is_err());
++    reply.await.unwrap(); let protected_file_after = std::fs::read(file).unwrap();
++    assert_eq!(protected_file_after, protected_file_before);
++    assert!(observed.try_recv().is_err(), "Denied concrete tool must not emit native dispatch start");
++}
++#[tokio::test]
++async fn ironbark_permission_child_context_keeps_gate() {
++    let root = tempfile::tempdir().unwrap(); let (gate, _requests) = gate(root.path());
++    let parent = ctx(root.path(), gate); let child = parent.for_subcall("child".into());
++    assert!(Arc::ptr_eq(parent.permission_gate.as_ref().unwrap(), child.permission_gate.as_ref().unwrap()));
++    assert!(child.permission_receipt.is_none());
++    let file = root.path().join("protected"); std::fs::write(&file, "original").unwrap(); let protected_file_before = std::fs::read(&file).unwrap();
++    assert!(write::WriteTool::new().execute(json!({"file_path":"protected","content":"changed"}), child).await.is_err());
++    let protected_file_after = std::fs::read(file).unwrap(); assert_eq!(protected_file_after, protected_file_before);
++}
++#[tokio::test]
++async fn ironbark_permission_missing_reply_or_disconnect_denies() {
++    let root = tempfile::tempdir().unwrap(); let (gate, requests) = gate(root.path()); let context = ctx(root.path(), gate.clone());
++    assert!(context.authorize("write", &json!({})).await.is_err()); drop(requests);
++    assert!(context.authorize("write", &json!({})).await.is_err());
++}
++#[tokio::test]
++async fn ironbark_permission_gate_uses_final_normalised_input() {
++    let root = tempfile::tempdir().unwrap(); let (gate, mut requests) = gate(root.path()); let context = ctx(root.path(), gate.clone());
++    let input = json!("{\"file_path\":\"protected\",\"content\":\"changed\"}");
++    let expected = json!({"file_path":"protected","content":"changed"});
++    let registry = Registry { tools: Arc::new(RwLock::new(HashMap::from([("write".into(), Arc::new(write::WriteTool::new()) as Arc<dyn Tool>)]))), skills: Registry::shared_skills_registry(), compaction: Arc::new(RwLock::new(CompactionManager::new())) };
++    let request = tokio::spawn(async move { let req = requests.recv().await.unwrap(); assert_eq!(req.action.resolved_name, "write"); assert_eq!(req.action.canonical_input, expected); gate.reply(req.request_id, req.action, false).unwrap(); });
++    assert!(registry.execute("write", input, context).await.is_err()); request.await.unwrap();
++}
++#[tokio::test]
++async fn ironbark_permission_registry_denial_precedes_every_sink() {
++    let root = tempfile::tempdir().unwrap(); let file = root.path().join("protected"); std::fs::write(&file,"original").unwrap(); let protected_file_before = std::fs::read(&file).unwrap();
++    let (gate, _requests) = gate(root.path()); let context = ctx(root.path(),gate);
++    let registry = Registry { tools: Arc::new(RwLock::new(HashMap::from([("write".into(), Arc::new(write::WriteTool::new()) as Arc<dyn Tool>)]))), skills: Registry::shared_skills_registry(), compaction: Arc::new(RwLock::new(CompactionManager::new())) };
++    assert!(registry.execute("write", json!({"file_path":"protected","content":"changed"}),context).await.is_err());
++    let protected_file_after = std::fs::read(file).unwrap(); assert_eq!(protected_file_after, protected_file_before);
++}
++#[tokio::test]
++async fn ironbark_permission_receipt_is_exact_and_single_use() {
++    let root = tempfile::tempdir().unwrap(); let (gate, mut requests) = gate(root.path()); let context = ctx(root.path(), gate.clone());
++    let action = gate.action(&context, "write", &json!({"file_path":"protected","content":"changed"})).unwrap();
++    let approval = tokio::spawn(async move { let req = requests.recv().await.unwrap(); gate.reply(req.request_id, req.action, true).unwrap(); });
++    let receipt = context.authorize("write", &action.canonical_input).await.unwrap().unwrap(); approval.await.unwrap();
++    let mut changed = action.clone(); changed.canonical_input["content"] = json!("other");
++    assert!(receipt.consume(&changed).is_err());
++    receipt.consume(&action).unwrap(); assert!(receipt.consume(&action).is_err());
++}
++#[tokio::test]
++async fn ironbark_permission_cancel_drops_pending_before_any_write() {
++    let root = tempfile::tempdir().unwrap(); let file = root.path().join("protected"); std::fs::write(&file, "original").unwrap();
++    let protected_file_before = std::fs::read(&file).unwrap();
++    let (gate, mut requests) = gate(root.path()); let context = ctx(root.path(), gate.clone());
++    let task = tokio::spawn(async move { write::WriteTool::new().execute(json!({"file_path":"protected","content":"changed"}), context).await });
++    let _request = requests.recv().await.unwrap(); task.abort(); assert!(task.await.unwrap_err().is_cancelled());
++    gate.bind_state(2, "c".repeat(64)).unwrap();
++    let protected_file_after = std::fs::read(file).unwrap(); assert_eq!(protected_file_after, protected_file_before);
++}
++#[tokio::test]
++async fn ironbark_permission_actual_allowed_write_emits_exact_native_start() {
++    let root = tempfile::tempdir().unwrap(); let (gate, mut requests) = gate(root.path());
++    let (events, mut observed) = tokio::sync::mpsc::unbounded_channel(); gate.bind_events(events).unwrap();
++    let context = ctx(root.path(), gate.clone());
++    let input = json!({"file_path":"artifact","content":"real native artifact"});
++    let expected = gate.action(&context, "write", &input).unwrap();
++    let approval = tokio::spawn(async move { let request = requests.recv().await.unwrap(); gate.reply(request.request_id, request.action, true).unwrap(); });
++    write::WriteTool::new().execute(input, context).await.unwrap(); approval.await.unwrap();
++    assert_eq!(std::fs::read_to_string(root.path().join("artifact")).unwrap(), "real native artifact");
++    match observed.recv().await.unwrap() { crate::protocol::ServerEvent::IronbarkToolStarted { action } => assert_eq!(action, expected), event => panic!("Unexpected native event {event:?}") }
++}
++#[test]
++#[cfg(target_os = "linux")]
++fn ironbark_permission_shell_child_environment_cannot_inherit_credentials() {
++    let root = tempfile::tempdir().unwrap();
++    let mut command = std::process::Command::new("/usr/bin/env");
++    command.env("OPENAI_API_KEY", "private-provider-sentinel").env("BASH_ENV", "/private/controller-init").env("ALPHACODE_HOME", "/private/controller-profile");
++    set_managed_child_environment(&mut command, root.path().to_str().unwrap());
++    let output = command.output().unwrap(); assert!(output.status.success());
++    let text = String::from_utf8(output.stdout).unwrap();
++    assert!(!text.contains("private-provider-sentinel")); assert!(!text.contains("BASH_ENV")); assert!(!text.contains("ALPHACODE_HOME"));
++    let mut keys: Vec<_> = text.lines().map(|line| line.split_once('=').unwrap().0).collect(); keys.sort();
++    assert_eq!(keys, vec!["HOME", "LANG", "PATH"]);
++    assert!(text.lines().any(|line| line == format!("HOME={}", root.path().display())));
++}
+diff --git i/src/alphacode_app_core/tool/jwt.rs w/src/alphacode_app_core/tool/jwt.rs
+index 78e99e4..b0d7a06 100644
+--- i/src/alphacode_app_core/tool/jwt.rs
++++ w/src/alphacode_app_core/tool/jwt.rs
+@@ -94,6 +94,8 @@ impl Tool for JwtTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: JwtInput = serde_json::from_value(input)?;
+ 
+         match params.action.as_str() {
+diff --git i/src/alphacode_app_core/tool/katana.rs w/src/alphacode_app_core/tool/katana.rs
+index f86afa6..3548b13 100644
+--- i/src/alphacode_app_core/tool/katana.rs
++++ w/src/alphacode_app_core/tool/katana.rs
+@@ -147,6 +147,8 @@ impl Tool for KatanaTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         // The seed URL is recovered rather than deserialized, so a bare string,
+         // an alias key, or a truncated payload still starts the crawl instead
+         // of failing with "missing field `url`" before any request is made.
+diff --git i/src/alphacode_app_core/tool/kxss.rs w/src/alphacode_app_core/tool/kxss.rs
+index 9379fdb..6e3f5a4 100644
+--- i/src/alphacode_app_core/tool/kxss.rs
++++ w/src/alphacode_app_core/tool/kxss.rs
+@@ -69,6 +69,8 @@ impl Tool for KxssTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: KxssInput = normalize_kxss_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/ls.rs w/src/alphacode_app_core/tool/ls.rs
+index d08232c..efdc2c5 100644
+--- i/src/alphacode_app_core/tool/ls.rs
++++ w/src/alphacode_app_core/tool/ls.rs
+@@ -77,6 +77,8 @@ impl Tool for LsTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: LsInput = serde_json::from_value(input)?;
+ 
+         let base_path = params.path.clone().unwrap_or_else(|| ".".to_string());
+diff --git i/src/alphacode_app_core/tool/mcp.rs w/src/alphacode_app_core/tool/mcp.rs
+index b81135a..9f9f2d8 100644
+--- i/src/alphacode_app_core/tool/mcp.rs
++++ w/src/alphacode_app_core/tool/mcp.rs
+@@ -86,6 +86,8 @@ impl Tool for McpManagementTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: McpToolInput = serde_json::from_value(input)?;
+         let started = std::time::Instant::now();
+         let action = params.action.clone();
+@@ -477,6 +479,8 @@ mod tests {
+ 
+     fn create_test_context() -> ToolContext {
+         ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: "test-session".to_string(),
+             message_id: "test-message".to_string(),
+             tool_call_id: "test-tool-call".to_string(),
+diff --git i/src/alphacode_app_core/tool/meg.rs w/src/alphacode_app_core/tool/meg.rs
+index 4489866..8e41ff4 100644
+--- i/src/alphacode_app_core/tool/meg.rs
++++ w/src/alphacode_app_core/tool/meg.rs
+@@ -72,6 +72,8 @@ impl Tool for MegTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: MegInput = normalize_meg_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/memory.rs w/src/alphacode_app_core/tool/memory.rs
+index e065485..9c225d9 100644
+--- i/src/alphacode_app_core/tool/memory.rs
++++ w/src/alphacode_app_core/tool/memory.rs
+@@ -128,6 +128,8 @@ impl Tool for MemoryTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         use crate::alphacode_app_core::memory;
+         use crate::alphacode_app_core::memory_types::{MemoryEventKind, MemoryState};
+ 
+@@ -487,6 +489,8 @@ mod tests {
+ 
+     fn test_ctx(working_dir: Option<std::path::PathBuf>) -> ToolContext {
+         ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: "test-session".to_string(),
+             message_id: "test-message".to_string(),
+             tool_call_id: "test-tool-call".to_string(),
+diff --git i/src/alphacode_app_core/tool/mod.rs w/src/alphacode_app_core/tool/mod.rs
+index 748d2f1..59f1d37 100644
+--- i/src/alphacode_app_core/tool/mod.rs
++++ w/src/alphacode_app_core/tool/mod.rs
+@@ -1,3 +1,5 @@
++#[cfg(test)]
++mod ironbark_permission_tests;
+ mod agentgrep;
+ mod amass;
+ pub mod ambient;
+@@ -1496,7 +1498,7 @@ impl Registry {
+         result: &Result<ToolOutput>,
+         latency_ms: u64,
+     ) {
+-        if !crate::hooks::hook_configured("post_tool") {
++        if ctx.permission_gate.is_some() || !crate::hooks::hook_configured("post_tool") {
+             return;
+         }
+         let mut event = crate::hooks::HookEvent::new("post_tool")
+@@ -1541,7 +1543,7 @@ impl Registry {
+         &self,
+         name: &str,
+         mut input: Value,
+-        ctx: ToolContext,
++        mut ctx: ToolContext,
+     ) -> Result<ToolOutput> {
+         // Last line of defense: normalize provider quirks here so *every*
+         // caller (agent loops, batch, SDK bridge, server actions) benefits,
+@@ -1670,10 +1672,12 @@ impl Registry {
+                 .entry("action".to_string())
+                 .or_insert(Value::String(action.to_string()));
+         }
++        ctx.permission_gate = ctx.permission_gate.clone().or_else(|| crate::alphacode_app_core::ironbark_permissions::session_gate(&ctx.session_id).map(|g| g as Arc<dyn crate::alphacode_app_core::ironbark_permissions::PermissionGate>));
++        ctx.permission_receipt = ctx.authorize(resolved_name, &input).await?;
+ 
+         // User-configured pre_tool gate: external policy hook that can block
+         // this call (exit 2). Skipped entirely when not configured.
+-        if crate::hooks::hook_configured("pre_tool") {
++        if ctx.permission_gate.is_none() && crate::hooks::hook_configured("pre_tool") {
+             let input_json = input.to_string();
+             let working_dir = ctx
+                 .working_dir
+@@ -1910,6 +1914,7 @@ impl Registry {
+         session_id: Option<String>,
+         working_dir: Option<std::path::PathBuf>,
+     ) {
++        if crate::alphacode_app_core::ironbark_permissions::managed() { return; }
+         use crate::alphacode_app_core::mcp::McpManager;
+         use std::sync::Arc;
+         use tokio::sync::RwLock;
+@@ -2149,6 +2154,7 @@ impl Registry {
+ 
+     /// Register self-dev tools (only for canary/self-dev sessions)
+     pub async fn register_selfdev_tools(&self) {
++        if crate::alphacode_app_core::ironbark_permissions::managed() { return; }
+         // Self-dev management tool
+         let selfdev_tool = selfdev::SelfDevTool::new();
+         self.register(
+diff --git i/src/alphacode_app_core/tool/multiedit.rs w/src/alphacode_app_core/tool/multiedit.rs
+index 67076d3..f4aeb4a 100644
+--- i/src/alphacode_app_core/tool/multiedit.rs
++++ w/src/alphacode_app_core/tool/multiedit.rs
+@@ -76,6 +76,8 @@ impl Tool for MultiEditTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: MultiEditInput = serde_json::from_value(input)?;
+ 
+         let path = ctx.resolve_path_guarded(Path::new(&params.file_path))?;
+diff --git i/src/alphacode_app_core/tool/naabu.rs w/src/alphacode_app_core/tool/naabu.rs
+index be06645..2cedb51 100644
+--- i/src/alphacode_app_core/tool/naabu.rs
++++ w/src/alphacode_app_core/tool/naabu.rs
+@@ -88,6 +88,8 @@ impl Tool for NaabuTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: NaabuInput = normalize_naabu_input(&input)?;
+         if params.target.is_empty() && params.list.is_none() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/nikto.rs w/src/alphacode_app_core/tool/nikto.rs
+index 3d62f7d..36a137d 100644
+--- i/src/alphacode_app_core/tool/nikto.rs
++++ w/src/alphacode_app_core/tool/nikto.rs
+@@ -91,6 +91,8 @@ impl Tool for NiktoTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: NiktoInput = normalize_nikto_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/nmap.rs w/src/alphacode_app_core/tool/nmap.rs
+index 362acf2..4087053 100644
+--- i/src/alphacode_app_core/tool/nmap.rs
++++ w/src/alphacode_app_core/tool/nmap.rs
+@@ -123,6 +123,8 @@ impl Tool for NmapTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: NmapInput = normalize_nmap_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/nuclei.rs w/src/alphacode_app_core/tool/nuclei.rs
+index 1c0258e..1dde932 100644
+--- i/src/alphacode_app_core/tool/nuclei.rs
++++ w/src/alphacode_app_core/tool/nuclei.rs
+@@ -105,6 +105,8 @@ impl Tool for NucleiTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: NucleiInput = normalize_nuclei_input(&input)?;
+         if params.target.is_empty() && params.list.is_none() {
+             return Err(anyhow::anyhow!(
+diff --git i/src/alphacode_app_core/tool/open.rs w/src/alphacode_app_core/tool/open.rs
+index 238980d..fd0926d 100644
+--- i/src/alphacode_app_core/tool/open.rs
++++ w/src/alphacode_app_core/tool/open.rs
+@@ -120,6 +120,8 @@ impl Tool for OpenTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         if input.get("mode").is_some() {
+             anyhow::bail!("open.mode was removed. Use action='open' or action='reveal'.");
+         }
+diff --git i/src/alphacode_app_core/tool/patch.rs w/src/alphacode_app_core/tool/patch.rs
+index c0e9352..7314168 100644
+--- i/src/alphacode_app_core/tool/patch.rs
++++ w/src/alphacode_app_core/tool/patch.rs
+@@ -59,6 +59,8 @@ impl Tool for PatchTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // Alias-tolerant extraction (parity with apply_patch): models often
+         // send `patch`, `content`, or `diff` instead of `patch_text`.
+         let patch_text = if let Some(obj) = input.as_object() {
+diff --git i/src/alphacode_app_core/tool/plan.rs w/src/alphacode_app_core/tool/plan.rs
+index 978eaa3..71aba84 100644
+--- i/src/alphacode_app_core/tool/plan.rs
++++ w/src/alphacode_app_core/tool/plan.rs
+@@ -58,6 +58,8 @@ impl Tool for PlanModeTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let action = input
+             .get("action")
+             .and_then(|v| v.as_str())
+diff --git i/src/alphacode_app_core/tool/qsreplace.rs w/src/alphacode_app_core/tool/qsreplace.rs
+index 44b04bb..8a1ae68 100644
+--- i/src/alphacode_app_core/tool/qsreplace.rs
++++ w/src/alphacode_app_core/tool/qsreplace.rs
+@@ -86,6 +86,8 @@ impl Tool for QsreplaceTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: QsreplaceInput = normalize_qsreplace_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/read.rs w/src/alphacode_app_core/tool/read.rs
+index 8e4c548..eff9a7b 100644
+--- i/src/alphacode_app_core/tool/read.rs
++++ w/src/alphacode_app_core/tool/read.rs
+@@ -193,6 +193,8 @@ impl Tool for ReadTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // The path is recovered before the range is normalized, because a bare
+         // string or a truncated payload made `from_value` fail with "missing
+         // field `file_path`" for a call that named the file correctly — and
+diff --git i/src/alphacode_app_core/tool/read/tests.rs w/src/alphacode_app_core/tool/read/tests.rs
+index 3600a56..bf5df2e 100644
+--- i/src/alphacode_app_core/tool/read/tests.rs
++++ w/src/alphacode_app_core/tool/read/tests.rs
+@@ -4,6 +4,8 @@ use serde_json::json;
+ 
+ fn make_ctx(working_dir: std::path::PathBuf) -> ToolContext {
+     ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "test-session".to_string(),
+         message_id: "test-message".to_string(),
+         tool_call_id: "test-call".to_string(),
+diff --git i/src/alphacode_app_core/tool/scrapling.rs w/src/alphacode_app_core/tool/scrapling.rs
+index 316fe27..9260064 100644
+--- i/src/alphacode_app_core/tool/scrapling.rs
++++ w/src/alphacode_app_core/tool/scrapling.rs
+@@ -109,6 +109,8 @@ impl Tool for ScraplingTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // Recovered rather than deserialized, so an alias key or a bare URL
+         // string still reaches the fetch instead of failing with a bare serde
+         // "missing field `url`".
+diff --git i/src/alphacode_app_core/tool/self_improve.rs w/src/alphacode_app_core/tool/self_improve.rs
+index 6014a5a..efa8b98 100644
+--- i/src/alphacode_app_core/tool/self_improve.rs
++++ w/src/alphacode_app_core/tool/self_improve.rs
+@@ -145,6 +145,8 @@ impl Tool for SelfImproveTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let action = input
+             .get("action")
+             .and_then(|v| v.as_str())
+diff --git i/src/alphacode_app_core/tool/selfdev/mod.rs w/src/alphacode_app_core/tool/selfdev/mod.rs
+index 6315cb9..b61a545 100644
+--- i/src/alphacode_app_core/tool/selfdev/mod.rs
++++ w/src/alphacode_app_core/tool/selfdev/mod.rs
+@@ -586,6 +586,8 @@ impl Tool for SelfDevTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: SelfDevInput = serde_json::from_value(input)?;
+         let action = params.action.clone();
+ 
+diff --git i/src/alphacode_app_core/tool/selfdev/tests.rs w/src/alphacode_app_core/tool/selfdev/tests.rs
+index bc586c5..ea8d71b 100644
+--- i/src/alphacode_app_core/tool/selfdev/tests.rs
++++ w/src/alphacode_app_core/tool/selfdev/tests.rs
+@@ -32,6 +32,8 @@ impl Drop for EnvVarGuard {
+ 
+ fn create_test_context(session_id: &str, working_dir: Option<std::path::PathBuf>) -> ToolContext {
+     ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: session_id.to_string(),
+         message_id: "test-message".to_string(),
+         tool_call_id: "test-tool-call".to_string(),
+diff --git i/src/alphacode_app_core/tool/session_search.rs w/src/alphacode_app_core/tool/session_search.rs
+index fae6508..5625aad 100644
+--- i/src/alphacode_app_core/tool/session_search.rs
++++ w/src/alphacode_app_core/tool/session_search.rs
+@@ -383,6 +383,8 @@ impl Tool for SessionSearchTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: SearchInput = serde_json::from_value(input)?;
+         let limit = match validate_bounded_usize(params.limit, DEFAULT_LIMIT, 1, MAX_LIMIT, "limit")
+         {
+diff --git i/src/alphacode_app_core/tool/side_panel.rs w/src/alphacode_app_core/tool/side_panel.rs
+index 74282de..bf9b686 100644
+--- i/src/alphacode_app_core/tool/side_panel.rs
++++ w/src/alphacode_app_core/tool/side_panel.rs
+@@ -77,6 +77,8 @@ impl Tool for SidePanelTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: SidePanelInput = serde_json::from_value(input)?;
+         let action_label = params.action.clone();
+         let page_label = params
+diff --git i/src/alphacode_app_core/tool/skill.rs w/src/alphacode_app_core/tool/skill.rs
+index 6b06790..9569646 100644
+--- i/src/alphacode_app_core/tool/skill.rs
++++ w/src/alphacode_app_core/tool/skill.rs
+@@ -93,6 +93,8 @@ impl Tool for SkillTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: SkillInput = serde_json::from_value(input)?;
+         let action_label = params.action.clone();
+         let name_label = params.name.clone().unwrap_or_else(|| "<none>".to_string());
+@@ -564,6 +566,8 @@ mod tests {
+ 
+     fn create_test_context() -> ToolContext {
+         ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: "test-session".to_string(),
+             message_id: "test-message".to_string(),
+             tool_call_id: "test-tool-call".to_string(),
+@@ -729,6 +733,8 @@ mod tests {
+ 
+     fn context_with_working_dir(dir: &std::path::Path) -> ToolContext {
+         ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             working_dir: Some(dir.to_path_buf()),
+             ..create_test_context()
+         }
+diff --git i/src/alphacode_app_core/tool/sqlmap.rs w/src/alphacode_app_core/tool/sqlmap.rs
+index 6d3b01b..812a07b 100644
+--- i/src/alphacode_app_core/tool/sqlmap.rs
++++ w/src/alphacode_app_core/tool/sqlmap.rs
+@@ -141,6 +141,8 @@ impl Tool for SqlmapTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: SqlmapInput = normalize_sqlmap_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/subfinder.rs w/src/alphacode_app_core/tool/subfinder.rs
+index 970ffcd..1e0a4e3 100644
+--- i/src/alphacode_app_core/tool/subfinder.rs
++++ w/src/alphacode_app_core/tool/subfinder.rs
+@@ -57,6 +57,8 @@ impl Tool for SubfinderTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: SubfinderInput = normalize_subfinder_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/tests.rs w/src/alphacode_app_core/tool/tests.rs
+index 9f374a5..9fae3fd 100644
+--- i/src/alphacode_app_core/tool/tests.rs
++++ w/src/alphacode_app_core/tool/tests.rs
+@@ -346,6 +346,8 @@ async fn a_malformed_call_reports_the_tools_full_required_contract() {
+     let registry = Registry::new(provider).await;
+     let session = format!("schema-hint-{}", std::process::id());
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: session.clone(),
+         message_id: "message".to_string(),
+         tool_call_id: "tool".to_string(),
+@@ -377,6 +379,8 @@ async fn repeated_missing_bash_command_stays_correctable_until_arguments_change(
+     // malformed-call streak accidentally.
+     let session_id = format!("bash-validation-{}", uuid::Uuid::new_v4());
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: session_id.clone(),
+         message_id: "message".to_string(),
+         tool_call_id: "tool".to_string(),
+@@ -598,6 +602,8 @@ impl Tool for BareSchemaTool {
+     }
+ 
+     async fn execute(&self, _input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let _input = _ctx.normalize_for_permission(_input)?;
++        _ctx.enforce_permission(self.name(), &_input).await?;
+         Ok(ToolOutput::new("ok"))
+     }
+ }
+@@ -695,6 +701,8 @@ async fn test_batch_resolves_function_namespaced_tools() {
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+     let registry = Registry::new(provider).await;
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "test-batch-function-namespace".to_string(),
+         message_id: "test".to_string(),
+         tool_call_id: "test".to_string(),
+@@ -731,6 +739,8 @@ async fn test_batch_rejects_function_namespaced_batch_recursion() {
+     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+     let registry = Registry::new(provider).await;
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "test-batch-function-namespace-recursion".to_string(),
+         message_id: "test".to_string(),
+         tool_call_id: "test".to_string(),
+@@ -762,6 +772,8 @@ async fn test_batch_resolves_oauth_names() {
+     let temp_dir = std::env::temp_dir();
+ 
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "test".to_string(),
+         message_id: "test".to_string(),
+         tool_call_id: "test".to_string(),
+@@ -787,6 +799,8 @@ async fn registry_execute_enforces_session_tool_policy_after_alias_resolution()
+     set_session_tool_policy(session_id, None, HashSet::from(["bash".to_string()]));
+ 
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: session_id.to_string(),
+         message_id: "test".to_string(),
+         tool_call_id: "test".to_string(),
+@@ -1280,6 +1294,8 @@ async fn unknown_tool_error_lists_available_tools_and_suggestions() {
+     registry.register_ambient_tools().await;
+ 
+     let ctx = ToolContext {
++        permission_gate: None,
++        permission_receipt: None,
+         session_id: "test-unknown-tool".to_string(),
+         message_id: "test".to_string(),
+         tool_call_id: "test".to_string(),
+diff --git i/src/alphacode_app_core/tool/todo.rs w/src/alphacode_app_core/tool/todo.rs
+index 97bd3f3..9e94675 100644
+--- i/src/alphacode_app_core/tool/todo.rs
++++ w/src/alphacode_app_core/tool/todo.rs
+@@ -795,6 +795,8 @@ impl Tool for TodoTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         let params: TodoInput =
+             serde_json::from_value(normalize_todo_input(input)).map_err(|err| {
+                 anyhow::anyhow!(
+@@ -1368,6 +1370,8 @@ mod tests {
+ 
+     fn test_ctx(session_id: &str) -> ToolContext {
+         ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: session_id.to_string(),
+             message_id: session_id.to_string(),
+             tool_call_id: "call".to_string(),
+diff --git i/src/alphacode_app_core/tool/unfurl.rs w/src/alphacode_app_core/tool/unfurl.rs
+index 6cab3d5..e63079d 100644
+--- i/src/alphacode_app_core/tool/unfurl.rs
++++ w/src/alphacode_app_core/tool/unfurl.rs
+@@ -64,6 +64,8 @@ impl Tool for UnfurlTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: UnfurlInput = normalize_unfurl_input(&input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/waybackurls.rs w/src/alphacode_app_core/tool/waybackurls.rs
+index b84d3bd..338f51c 100644
+--- i/src/alphacode_app_core/tool/waybackurls.rs
++++ w/src/alphacode_app_core/tool/waybackurls.rs
+@@ -62,6 +62,8 @@ impl Tool for WaybackurlsTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         let params: WaybackurlsInput = serde_json::from_value(input)?;
+         let args = build_args(&params)?;
+ 
+diff --git i/src/alphacode_app_core/tool/webfetch.rs w/src/alphacode_app_core/tool/webfetch.rs
+index c28d5c1..637c1c3 100644
+--- i/src/alphacode_app_core/tool/webfetch.rs
++++ w/src/alphacode_app_core/tool/webfetch.rs
+@@ -697,6 +697,8 @@ impl Tool for WebFetchTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         // Recover the target before anything else. The previous strict
+         // `from_value::<WebFetchInput>` reported a bare serde "missing field
+         // `url`" for every shape a model actually emits — an alias key
+diff --git i/src/alphacode_app_core/tool/websearch.rs w/src/alphacode_app_core/tool/websearch.rs
+index f7cdfa3..dc93f40 100644
+--- i/src/alphacode_app_core/tool/websearch.rs
++++ w/src/alphacode_app_core/tool/websearch.rs
+@@ -128,6 +128,8 @@ impl Tool for WebSearchTool {
+     }
+ 
+     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
++        let input = _ctx.normalize_for_permission(input)?;
++        _ctx.enforce_permission(self.name(), &input).await?;
+         // `query` is recovered rather than deserialized, because the models that
+         // mistype it here send it under a different key entirely, and search is
+         // the tool they reach for when they are stuck — a failed query costs the
+diff --git i/src/alphacode_app_core/tool/write.rs w/src/alphacode_app_core/tool/write.rs
+index f2b0ab8..3f86a17 100644
+--- i/src/alphacode_app_core/tool/write.rs
++++ w/src/alphacode_app_core/tool/write.rs
+@@ -122,6 +122,8 @@ impl Tool for WriteTool {
+     }
+ 
+     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
++        let input = ctx.normalize_for_permission(input)?;
++        ctx.enforce_permission(self.name(), &input).await?;
+         // Captured before `extract_write_input` normalizes the payload away.
+         let salvaged = input_was_truncated(&input);
+         // `file_path` is recovered first so a payload that named the file under
+diff --git i/src/alphacode_base/hooks.rs w/src/alphacode_base/hooks.rs
+index f5b21f1..ff5a219 100644
+--- i/src/alphacode_base/hooks.rs
++++ w/src/alphacode_base/hooks.rs
+@@ -78,6 +78,9 @@ impl HookEvent {
+ 
+ /// The configured command for `event`, if any.
+ pub fn hook_command(event: &str) -> Option<String> {
++    // External hook commands are additional native sinks; the managed host has
++    // not authorised them as part of an individual tool action.
++    if crate::alphacode_app_core::ironbark_permissions::managed() { return None; }
+     if hooks_suppressed() {
+         return None;
+     }
+diff --git i/src/alphacode_protocol/mod.rs w/src/alphacode_protocol/mod.rs
+index c6251b7..861733b 100644
+--- i/src/alphacode_protocol/mod.rs
++++ w/src/alphacode_protocol/mod.rs
+@@ -563,6 +563,7 @@ pub struct AwaitedMemberStatus {
+ impl Request {
+     pub fn id(&self) -> u64 {
+         match self {
++            Request::IronbarkIdentity { id } | Request::IronbarkBind { id, .. } | Request::IronbarkPermissionReply { id, .. } => *id,
+             Request::Message { id, .. } => *id,
+             Request::Cancel { id } => *id,
+             Request::BackgroundTool { id } => *id,
+diff --git i/src/alphacode_protocol/wire.rs w/src/alphacode_protocol/wire.rs
+index 7180bc5..2ab62c2 100644
+--- i/src/alphacode_protocol/wire.rs
++++ w/src/alphacode_protocol/wire.rs
+@@ -36,6 +36,9 @@ fn is_false(value: &bool) -> bool {
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ #[serde(tag = "type")]
+ pub enum Request {
++    IronbarkIdentity { id: u64 },
++    IronbarkBind { id: u64, policy_version: u64, state_digest: String },
++    IronbarkPermissionReply { id: u64, request_id: String, action: crate::alphacode_app_core::ironbark_permissions::NativeAction, allowed: bool },
+     /// Send a message to the agent
+     #[serde(rename = "message")]
+     Message {
+@@ -724,6 +727,9 @@ pub enum Request {
+     reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
+ )]
+ pub enum ServerEvent {
++    IronbarkIdentity { id: u64, identity: serde_json::Value },
++    IronbarkPermission { request_id: String, action: crate::alphacode_app_core::ironbark_permissions::NativeAction },
++    IronbarkToolStarted { action: crate::alphacode_app_core::ironbark_permissions::NativeAction },
+     /// Acknowledgment of request
+     #[serde(rename = "ack")]
+     Ack { id: u64 },
+diff --git i/src/alphacode_tool_core/mod.rs w/src/alphacode_tool_core/mod.rs
+index a4d75db..40a9c59 100644
+--- i/src/alphacode_tool_core/mod.rs
++++ w/src/alphacode_tool_core/mod.rs
+@@ -64,6 +64,8 @@ pub struct ToolContext {
+     pub stdin_request_tx: Option<tokio::sync::mpsc::UnboundedSender<StdinInputRequest>>,
+     pub graceful_shutdown_signal: Option<InterruptSignal>,
+     pub execution_mode: ToolExecutionMode,
++    pub permission_gate: Option<std::sync::Arc<dyn crate::alphacode_app_core::ironbark_permissions::PermissionGate>>,
++    pub permission_receipt: Option<crate::alphacode_app_core::ironbark_permissions::PermissionReceipt>,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -92,6 +94,32 @@ pub enum ToolExecutionClass {
+ }
+ 
+ impl ToolContext {
++    pub fn normalize_for_permission(&self, input: Value) -> Result<Value> {
++        if input.is_object() || self.effective_gate()?.is_none() { return Ok(input); }
++        Ok(crate::alphacode_message_types::ToolCall::normalize_input_to_object(input))
++    }
++
++    fn effective_gate(&self) -> Result<Option<std::sync::Arc<dyn crate::alphacode_app_core::ironbark_permissions::PermissionGate>>> {
++        use crate::alphacode_app_core::ironbark_permissions as permissions;
++        let gate = self.permission_gate.clone().or_else(|| permissions::session_gate(&self.session_id).map(|g| g as std::sync::Arc<dyn permissions::PermissionGate>));
++        if permissions::managed() && gate.is_none() { anyhow::bail!("MissingMandatoryPermissionGate"); }
++        Ok(gate)
++    }
++
++    pub async fn authorize(&self, name: &str, input: &Value) -> Result<Option<crate::alphacode_app_core::ironbark_permissions::PermissionReceipt>> {
++        let Some(gate) = self.effective_gate()? else { return Ok(None); };
++        let action = gate.action(self, name, input)?;
++        Ok(Some(gate.check(action).await?))
++    }
++
++    pub async fn enforce_permission(&self, name: &str, input: &Value) -> Result<()> {
++        let Some(gate) = self.effective_gate()? else { return Ok(()); };
++        let action = gate.action(self, name, input)?;
++        if let Some(receipt) = &self.permission_receipt { receipt.consume(&action)?; }
++        else { gate.check(action.clone()).await?.consume(&action)?; }
++        gate.started(action)
++    }
++
+     pub fn for_subcall(&self, tool_call_id: String) -> Self {
+         Self {
+             session_id: self.session_id.clone(),
+@@ -101,6 +129,8 @@ impl ToolContext {
+             stdin_request_tx: self.stdin_request_tx.clone(),
+             graceful_shutdown_signal: self.graceful_shutdown_signal.clone(),
+             execution_mode: self.execution_mode,
++            permission_gate: self.permission_gate.clone().or_else(|| crate::alphacode_app_core::ironbark_permissions::session_gate(&self.session_id).map(|g| g as std::sync::Arc<dyn crate::alphacode_app_core::ironbark_permissions::PermissionGate>)),
++            permission_receipt: None,
+         }
+     }
+ 
+diff --git i/src/alphacode_tui/tui/app/commands.rs w/src/alphacode_tui/tui/app/commands.rs
+index 32a2315..4a0351a 100644
+--- i/src/alphacode_tui/tui/app/commands.rs
++++ w/src/alphacode_tui/tui/app/commands.rs
+@@ -692,6 +692,8 @@ fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
+         }));
+ 
+         let ctx = crate::tool::ToolContext {
++            permission_gate: None,
++            permission_receipt: None,
+             session_id: session_id.clone(),
+             message_id: message_id.clone(),
+             tool_call_id: tool_call_for_task.id.clone(),
+diff --git i/src/alphacode_tui/tui/app/turn.rs w/src/alphacode_tui/tui/app/turn.rs
+index bbad5fc..448941c 100644
+--- i/src/alphacode_tui/tui/app/turn.rs
++++ w/src/alphacode_tui/tui/app/turn.rs
+@@ -990,6 +990,8 @@ impl App {
+                                     } => {
+                                         // Execute native tool and send result back to SDK bridge
+                                         let ctx = crate::tool::ToolContext {
++                                            permission_gate: None,
++                                            permission_receipt: None,
+                                             session_id: self.session_id().to_string(),
+                                             message_id: self.session_id().to_string(),
+                                             tool_call_id: request_id.clone(),
+@@ -1285,6 +1287,8 @@ impl App {
+ 
+                 // Execute locally
+                 let ctx = ToolContext {
++                    permission_gate: None,
++                    permission_receipt: None,
+                     session_id: self.session.id.clone(),
+                     message_id: message_id.clone(),
+                     tool_call_id: tc.id.clone(),
+diff --git i/src/cli/acp.rs w/src/cli/acp.rs
+index 1c4d5e5..0332ec7 100644
+--- i/src/cli/acp.rs
++++ w/src/cli/acp.rs
+@@ -78,7 +78,7 @@ impl JsonRpcMessage {
+                 .get("method")
+                 .and_then(Value::as_str)
+                 .map(str::to_string),
+-            params: object.get("params").cloned().unwrap_or(Value::Null),
++            params: object.get("params").or_else(|| object.get("result")).cloned().unwrap_or(Value::Null),
+         })
+     }
+ }
+@@ -142,6 +142,7 @@ struct AcpRuntime {
+     provider_choice: ProviderChoice,
+     model: Option<String>,
+     provider_profile: Option<String>,
++    permission_requests: Arc<Mutex<HashMap<String, (Arc<DaemonSession>, crate::alphacode_app_core::ironbark_permissions::NativeAction)>>>,
+ }
+ 
+ impl AcpRuntime {
+@@ -158,6 +159,7 @@ impl AcpRuntime {
+             provider_choice,
+             model,
+             provider_profile,
++            permission_requests: Arc::new(Mutex::new(HashMap::new())),
+         }
+     }
+ 
+@@ -195,22 +197,32 @@ impl AcpRuntime {
+ 
+     async fn handle_message(&self, message: JsonRpcMessage) -> Result<()> {
+         let Some(method) = message.method.as_deref() else {
+-            if let Some(id) = message.id {
+-                self.write_error_value(
+-                    id,
+-                    JSONRPC_INVALID_REQUEST,
+-                    "JSON-RPC request missing method".to_string(),
+-                )
+-                .await?;
+-            }
++            let Some(id) = message.id.as_ref().and_then(Value::as_str) else { return Ok(()); };
++            let Some((session, expected)) = self.permission_requests.lock().await.remove(id) else { anyhow::bail!("UnknownPermissionReply"); };
++            let supplied: crate::alphacode_app_core::ironbark_permissions::NativeAction = serde_json::from_value(message.params.get("action").cloned().unwrap_or(Value::Null))?;
++            let allowed = supplied == expected && message.params.get("allowed").and_then(Value::as_bool) == Some(true);
++            session.send(&Request::IronbarkPermissionReply { id: session.next_id(), request_id: id.into(), action: expected, allowed }).await?;
+             return Ok(());
+         };
+ 
+         match method {
+             "initialize" => {
+                 if let Some(id) = message.id {
+-                    self.write_result(id, initialize_result(&message.params, self.profile))
+-                        .await?;
++                    let mut result = initialize_result(&message.params, self.profile);
++                    if crate::alphacode_app_core::ironbark_permissions::managed() {
++                        let (reader, writer) = self.connect_daemon().await?;
++                        let probe = DaemonSession::new(String::new(), reader, writer, 2);
++                        probe.send(&Request::IronbarkIdentity { id: 1 }).await?;
++                        let event = tokio::time::timeout(std::time::Duration::from_secs(5), probe.read_event()).await??;
++                        match event {
++                            ServerEvent::IronbarkIdentity { identity, .. } => {
++                                if identity != crate::alphacode_app_core::ironbark_permissions::extension(true)? { anyhow::bail!("ManagedDaemonIdentityMismatch"); }
++                                result["_ironbark"] = identity;
++                            }
++                            _ => anyhow::bail!("UnpatchedDaemon"),
++                        }
++                    }
++                    self.write_result(id, result).await?;
+                 }
+             }
+             "session/new" => self.handle_session_new(message).await?,
+@@ -219,6 +231,24 @@ impl AcpRuntime {
+             "session/prompt" => self.handle_session_prompt(message).await?,
+             "session/cancel" => self.handle_session_cancel(message).await?,
+             "session/close" => self.handle_session_close(message).await?,
++            "_ironbark/bind" => {
++                let session_id = required_session_id(&message.params).map_err(anyhow::Error::msg)?;
++                let session = self.sessions.lock().await.get(&session_id).cloned().ok_or_else(|| anyhow::anyhow!("UnknownManagedSession"))?;
++                if session.prompt_running.load(Ordering::SeqCst) { anyhow::bail!("CannotBindDuringPrompt"); }
++                let policy_version = message.params["policy_version"].as_u64().ok_or_else(|| anyhow::anyhow!("MissingPolicyVersion"))?;
++                let state_digest = message.params["state_digest"].as_str().ok_or_else(|| anyhow::anyhow!("MissingStateDigest"))?.into();
++                let id = session.next_id();
++                session.send(&Request::IronbarkBind { id, policy_version, state_digest }).await?;
++                wait_for_done(&session, id).await?;
++                if let Some(id) = message.id { self.write_result(id, json!({})).await?; }
++            }
++            "_ironbark/history" => {
++                let session_id = required_session_id(&message.params).map_err(anyhow::Error::msg)?;
++                let session = self.sessions.lock().await.get(&session_id).cloned().ok_or_else(|| anyhow::anyhow!("UnknownManagedSession"))?;
++                if session.prompt_running.load(Ordering::SeqCst) { anyhow::bail!("CannotExportDuringPrompt"); }
++                let history = request_history(&session).await?;
++                if let Some(id) = message.id { self.write_result(id, serde_json::to_value(history)?).await?; }
++            }
+             _ if method.starts_with('_') => {
+                 if let Some(id) = message.id {
+                     self.write_error_value(
+@@ -387,7 +417,9 @@ impl AcpRuntime {
+ 
+         let runtime = self.clone();
+         tokio::spawn(async move {
++            let completed_session = session.session_id.clone();
+             let result = runtime.run_prompt(id.clone(), session, text, images).await;
++            runtime.permission_requests.lock().await.retain(|_, (owned, _)| owned.session_id != completed_session);
+             if let Err(err) = result {
+                 let _ = runtime
+                     .write_error_value(
+@@ -447,6 +479,12 @@ impl AcpRuntime {
+     }
+ 
+     async fn ensure_daemon(&self) -> Result<()> {
++        if crate::alphacode_app_core::ironbark_permissions::managed() {
++            let identity = crate::alphacode_app_core::ironbark_permissions::identity().unwrap();
++            if crate::alphacode_app_core::server::socket_path().display().to_string() != identity.socket { anyhow::bail!("ManagedSocketMismatch"); }
++            // Core C3 owns startup. Never attach via upstream daemon discovery/spawn.
++            return Ok(());
++        }
+         if dispatch::server_is_running().await {
+             return Ok(());
+         }
+@@ -464,6 +502,9 @@ impl AcpRuntime {
+             &crate::alphacode_app_core::server::socket_path(),
+         )
+         .await?;
++        if crate::alphacode_app_core::ironbark_permissions::managed() {
++            crate::alphacode_app_core::ironbark_permissions::validate_daemon_peer(&stream)?;
++        }
+         Ok(stream.into_split())
+     }
+ 
+@@ -500,10 +541,21 @@ impl AcpRuntime {
+     async fn attach_existing_session(
+         &self,
+         target_session_id: String,
+-        _cwd: PathBuf,
++        cwd: PathBuf,
+         replay_history: bool,
+     ) -> Result<DaemonSession> {
++        if crate::alphacode_app_core::ironbark_permissions::managed() {
++            let expected = crate::alphacode_app_core::ironbark_permissions::identity().unwrap();
++            if cwd.canonicalize()?.display().to_string() != expected.cwd { anyhow::bail!("ManagedResumeCwdMismatch"); }
++        }
+         let (reader, writer) = self.connect_daemon().await?;
++        if crate::alphacode_app_core::ironbark_permissions::managed() {
++            // Upstream requires Subscribe before stateful ResumeSession.
++            let initial = DaemonSession::new(String::new(), reader, writer, 3);
++            initial.send(&Request::Subscribe { id: 1, working_dir: Some(cwd.display().to_string()), selfdev: Some(false), target_session_id: Some(target_session_id.clone()), client_instance_id: Some("ironbark-acp".into()), client_has_local_history: false, allow_session_takeover: false, terminal_env: Vec::new() }).await?;
++            wait_for_done(&initial, 1).await?;
++            return Ok(DaemonSession::new(target_session_id, initial.reader.into_inner().into_inner(), initial.writer.into_inner(), 3));
++        }
+         let session = DaemonSession::new(String::new(), reader, writer, 2);
+         let resume_id = 1;
+         session
+@@ -589,6 +641,9 @@ impl AcpRuntime {
+         images: Vec<(String, String)>,
+     ) -> Result<()> {
+         let prompt_id = session.next_id();
++        if crate::alphacode_app_core::ironbark_permissions::managed() {
++            self.write_notification("_ironbark/turn_started", json!({"sessionId": session.session_id, "nativeTurnId": prompt_id})).await?;
++        }
+         {
+             let mut active = session.active_prompt_id.lock().await;
+             *active = Some(prompt_id);
+@@ -623,6 +678,13 @@ impl AcpRuntime {
+             }
+             match event {
+                 ServerEvent::Ack { .. } => {}
++                ServerEvent::IronbarkPermission { request_id, action } => {
++                    self.permission_requests.lock().await.insert(request_id.clone(), (session.clone(), action.clone()));
++                    self.write_value(json!({"jsonrpc":"2.0","id":request_id,"method":"session/request_permission","params":{"sessionId":session.session_id,"toolCall":{"toolCallId":action.tool_call_id,"title":action.resolved_name,"rawInput":action.canonical_input},"options":[{"optionId":"allow_once","name":"Allow once","kind":"allow_once"},{"optionId":"reject_once","name":"Deny","kind":"reject_once"}],"_ironbark":{"action":action}}})).await?;
++                }
++                ServerEvent::IronbarkToolStarted { action } => {
++                    self.write_value(json!({"jsonrpc":"2.0","method":"_ironbark/tool_started","params":{"sessionId":session.session_id,"action":action}})).await?;
++                }
+                 ServerEvent::Done { id } if id == prompt_id => break,
+                 ServerEvent::Interrupted => {
+                     stop_reason = "cancelled".to_string();
+@@ -767,7 +829,7 @@ impl EventMapper {
+     fn map_event(&mut self, event: ServerEvent) -> Vec<Value> {
+         match event {
+             ServerEvent::TextDelta { text } => vec![agent_message_chunk(text)],
+-            ServerEvent::TextReplace { text } => vec![agent_message_chunk(text)],
++            ServerEvent::TextReplace { text } => vec![json!({"sessionUpdate":"_ironbark/text_replace","content":{"type":"text","text":text}})],
+             ServerEvent::ToolStart { id, name } => {
+                 self.current_tool_id = Some(id.clone());
+                 self.tool_inputs.entry(id.clone()).or_default();
+@@ -1082,14 +1144,14 @@ pub(crate) async fn run_acp_command(
+ ) -> Result<()> {
+     crate::alphacode_core::env::set_var("ALPHACODE_NON_INTERACTIVE", "1");
+     let acp_config = crate::config::config().acp.clone();
+-    if !explicit_tool_profile {
++    if !crate::alphacode_app_core::ironbark_permissions::managed() && !explicit_tool_profile {
+         crate::alphacode_core::env::set_var(
+             "ALPHACODE_TOOL_PROFILE",
+             acp_config.tool_profile.trim(),
+         );
+         crate::config::invalidate_config_cache();
+     }
+-    let profile = AcpProfile::parse(&acp_config.profile);
++    let profile = if crate::alphacode_app_core::ironbark_permissions::managed() { AcpProfile::Extended } else { AcpProfile::parse(&acp_config.profile) };
+     AcpRuntime::new(profile, provider_choice, model, provider_profile)
+         .run()
+         .await
+diff --git i/src/cli/args.rs w/src/cli/args.rs
+index aff768d..9e03224 100644
+--- i/src/cli/args.rs
++++ w/src/cli/args.rs
+@@ -34,6 +34,15 @@ pub(crate) enum ProviderAuthArg {
+     after_help = "Website: https://alphacli.github.io/\nSource:  https://github.com/dragonked2/alphacode"
+ )]
+ pub(crate) struct Args {
++    /// Enforce the mandatory Ironbark host permission boundary.
++    #[arg(long, global = true)]
++    pub(crate) ironbark_managed: bool,
++    /// Host-owned isolated identity manifest (not model-provided).
++    #[arg(long, global = true)]
++    pub(crate) ironbark_identity: Option<std::path::PathBuf>,
++    /// Private inherited core bootstrap pipe; closed before any child/tool starts.
++    #[arg(long, global = true)]
++    pub(crate) ironbark_controller_fd: Option<i32>,
+     /// Initial provider to use (alphacode, claude, openai, openai-api, openrouter, azure, opencode, opencode-go, zai, 302ai, baseten, conifer, cortecs, comtegra, deepseek, fpt, firmware, huggingface, moonshotai, nebius, scaleway, stackit, groq, mistral, perplexity, togetherai, deepinfra, xai, grok-build, nvidia-nim, lmstudio, ollama, chutes, cerebras, alibaba-coding-plan, codecraft, unikey, openai-compatible, cursor, copilot, gemini, antigravity, google, or auto-detect). Interactive sessions can switch providers with /model.
+     #[arg(short, long, default_value = "auto", global = true)]
+     pub(crate) provider: ProviderChoice,
+diff --git i/src/cli/dispatch.rs w/src/cli/dispatch.rs
+index cd4972a..104b767 100644
+--- i/src/cli/dispatch.rs
++++ w/src/cli/dispatch.rs
+@@ -139,6 +139,9 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
+             let provider_start = Instant::now();
+             let provider =
+                 provider_init::init_provider(&args.provider, args.model.as_deref()).await?;
++            if let Some(identity) = crate::alphacode_app_core::ironbark_permissions::identity() {
++                if provider.model() != identity.effective_route["model_id"].as_str().unwrap_or_default() { anyhow::bail!("ManagedResolvedRouteMismatch"); }
++            }
+             let provider_ms = provider_start.elapsed().as_millis();
+             let server_new_start = Instant::now();
+             let server = server::Server::new_with_name(provider, server_name);
+diff --git i/src/cli/ironbark_managed.rs w/src/cli/ironbark_managed.rs
+new file mode 100644
+index 0000000..945f8b1
+--- /dev/null
++++ w/src/cli/ironbark_managed.rs
+@@ -0,0 +1,96 @@
++use anyhow::{Result, bail};
++use super::args::{Args, Command};
++use crate::alphacode_app_core::ironbark_permissions::{configure, ManagedIdentity};
++use std::path::Path;
++#[cfg(unix)]
++fn owned(path: &Path, directory: bool) -> Result<()> {
++    use std::os::unix::fs::MetadataExt;
++    let metadata = std::fs::symlink_metadata(path)?;
++    if metadata.file_type().is_symlink() || metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 || metadata.is_dir() != directory { bail!("ManagedPathMustBePrivateOwnedAndNotSymlink"); }
++    Ok(())
++}
++#[cfg(not(unix))]
++fn owned(_path: &Path, _directory: bool) -> Result<()> { bail!("IronbarkManagedRequiresUnixContainment"); }
++pub(super) fn prepare(args: &mut Args) -> Result<()> {
++    read_controller_bootstrap(args)?;
++    if !matches!(args.command, Some(Command::Serve { .. }) | Some(Command::Acp)) { bail!("ManagedModeOnlyDedicatedServeOrAcp"); }
++    let manifest = args.ironbark_identity.as_ref().ok_or_else(|| anyhow::anyhow!("MissingManagedIdentity"))?;
++    owned(manifest, false)?;
++    let identity: ManagedIdentity = serde_json::from_slice(&std::fs::read(manifest)?)?;
++    let digest = option_env!("IRONBARK_ALPHACODE_BUILD_DIGEST").ok_or_else(|| anyhow::anyhow!("UnqualifiedBuildMissingDigest"))?;
++    if digest.len() != 64 || identity.build_digest != digest { bail!("ManagedBuildDigestMismatch"); }
++    let profile = Path::new(&identity.profile); owned(profile, true)?;
++    if profile.canonicalize()? != profile || Path::new(&identity.socket).parent() != Some(profile) { bail!("DedicatedSocketProfileMismatch"); }
++    if std::env::var_os("ALPHACODE_HOME").as_deref() != Some(profile.as_os_str()) { bail!("ManagedProfileEnvironmentMismatch"); }
++    if args.socket.as_deref() != Some(identity.socket.as_str()) || args.provider_profile.as_deref().filter(|s| !s.is_empty()).is_none() { bail!("ExplicitManagedSocketAndProviderProfileRequired"); }
++    if args.provider_profile.as_deref() != identity.effective_route.get("connection_id").and_then(serde_json::Value::as_str) || identity.effective_route.get("harness").and_then(serde_json::Value::as_str) != Some("alphacode") { bail!("ManagedProviderProfileRouteMismatch"); }
++    let model = identity.effective_route.get("model_id").and_then(serde_json::Value::as_str).ok_or_else(|| anyhow::anyhow!("MissingManagedModel"))?;
++    if !managed_model_is_explicit(model) || args.model.as_deref() != Some(model) { bail!("ManagedRouteMustBeExplicit"); }
++    if !matches!(args.provider, super::provider_init::ProviderChoice::OpenaiCompatible) { bail!("ManagedProviderMustBeExplicitNamedProfile"); }
++    let tools: Vec<_> = args.tools.as_deref().ok_or_else(|| anyhow::anyhow!("ExplicitToolAllowlistRequired"))?.split(',').map(str::to_owned).collect();
++    if tools != identity.allowed_tools || tools.iter().any(|t| !["read","write","edit","multiedit","apply_patch","patch","bash","ls","agentgrep","batch","todo"].contains(&t.as_str())) { bail!("ManagedToolAllowlistMismatchOrUnauthorisedTool"); }
++    if args.cwd.as_deref() != Some(identity.cwd.as_str()) || Path::new(&identity.cwd).canonicalize()?.display().to_string() != identity.cwd { bail!("ManagedCwdMismatch"); }
++    args.no_update = true; args.auto_update = false; args.no_selfdev = true; args.disable_base_tools = true;
++    crate::alphacode_core::env::set_var("ALPHACODE_NO_TELEMETRY", "1");
++    configure(identity)
++}
++#[cfg(target_os = "linux")]
++fn read_controller_bootstrap(args: &Args) -> Result<()> {
++    use std::io::Read;
++    use std::os::fd::FromRawFd;
++    use std::os::unix::fs::FileTypeExt;
++    use crate::alphacode_app_core::ironbark_permissions::{ControllerIdentity, configure_controller};
++    // exec resets dumpability: this call is deliberately IN the native entry path,
++    // not just in the C3 launcher's pre_exec hook.
++    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 || unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 { bail!("ManagedPostExecProcessHardeningFailed"); }
++    let fd = args.ironbark_controller_fd.filter(|fd| *fd >= 3).ok_or_else(|| anyhow::anyhow!("MissingControllerBootstrapFd"))?;
++    // C3 explicitly transfers ownership of this inherited pipe to us.
++    let mut pipe = unsafe { std::fs::File::from_raw_fd(fd) };
++    if !pipe.metadata()?.file_type().is_fifo() { bail!("ControllerBootstrapMustBePipe"); }
++    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
++    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 { bail!("ControllerBootstrapFdHardeningFailed"); }
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    let mut bootstrap = Vec::with_capacity(4096);
++    let mut buffer = [0u8; 512];
++    loop {
++        if std::time::Instant::now() >= deadline { bail!("ControllerBootstrapTimeout"); }
++        match pipe.read(&mut buffer) {
++            Ok(0) => break,
++            Ok(n) => {
++                if bootstrap.len() + n > 4096 { bail!("ControllerBootstrapOversize"); }
++                bootstrap.extend_from_slice(&buffer[..n]);
++            }
++            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
++                let remaining = deadline.saturating_duration_since(std::time::Instant::now()).as_millis().min(5000) as i32;
++                let mut poll = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
++                let ready = unsafe { libc::poll(&mut poll, 1, remaining) };
++                if ready < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted { bail!("ControllerBootstrapPollFailed"); }
++                if ready == 0 { bail!("ControllerBootstrapTimeout"); }
++            }
++            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
++            Err(error) => return Err(error.into()),
++        }
++    }
++    drop(pipe); // No tool/child inherits controller bootstrap material.
++    let controller: ControllerIdentity = serde_json::from_slice(&bootstrap)?;
++    let own = std::process::id();
++    let own_expected = if matches!(args.command, Some(Command::Acp)) { controller.acp_pid } else { controller.daemon_pid };
++    if own != own_expected || unsafe { libc::getppid() } as u32 != controller.controller_pid || controller.acp_pid == controller.daemon_pid || controller.controller_pid == 0 { bail!("ManagedControllerProcessIdentityMismatch"); }
++    configure_controller(controller)
++}
++#[cfg(not(target_os = "linux"))]
++fn read_controller_bootstrap(_args: &Args) -> Result<()> { bail!("IronbarkManagedRequiresLinux"); }
++fn managed_model_is_explicit(model: &str) -> bool {
++    !model.is_empty() && model == model.trim() && !model.eq_ignore_ascii_case("auto") && !model.ends_with("/auto") && !model.starts_with("kilo-auto/") && !crate::alphacode_provider_metadata::free_pool::is_free_tier_model_id(model)
++}
++#[cfg(test)]
++mod tests {
++    use super::managed_model_is_explicit;
++    #[test]
++    fn ironbark_permission_rejects_native_free_and_automatic_selectors() {
++        for model in ["", "auto", "AUTO", "openrouter/auto", "kilo-auto/free", "kilo-auto/efficient", "kilo-auto/small", "kilo-auto/frontier", "kilo-auto/balanced", "openrouter/free", "fixture:free", " fixed-model "] {
++            assert!(!managed_model_is_explicit(model), "{model} must not select a managed route");
++        }
++        assert!(managed_model_is_explicit("fixed-model"));
++    }
++}
+diff --git i/src/cli/mod.rs w/src/cli/mod.rs
+index 2453549..7529b20 100644
+--- i/src/cli/mod.rs
++++ w/src/cli/mod.rs
+@@ -6,6 +6,7 @@ pub mod commands;
+ pub mod debug;
+ pub mod dispatch;
+ pub mod hot_exec;
++pub mod ironbark_managed;
+ pub mod login;
+ pub mod output;
+ pub mod proctitle;
+diff --git i/src/cli/startup.rs w/src/cli/startup.rs
+index 252cd20..aeaebe9 100644
+--- i/src/cli/startup.rs
++++ w/src/cli/startup.rs
+@@ -16,6 +16,8 @@ fn sync_output_style_from_config() {
+ }
+ 
+ pub async fn run() -> Result<()> {
++    // Managed validation must precede config, telemetry, update and helper startup.
++    let args = parse_and_prepare_args()?;
+     startup_profile::init();
+ 
+     terminal::install_panic_hook();
+@@ -182,14 +184,13 @@ pub async fn run() -> Result<()> {
+     telemetry::record_upgrade_if_needed();
+     startup_profile::mark("telemetry_check");
+ 
+-    let args = parse_and_prepare_args()?;
+ 
+     // Check if a newer binary was installed by a previous session's auto-update
+     // but the current process is still the old one (e.g. the user ran the old
+     // binary from PATH after an update installed a newer version). This is a
+     // cheap filesystem check (symlink + mtime) that runs before the TUI is
+     // initialized, so a re-exec here is safe and invisible to the user.
+-    maybe_reexec_to_fresher_binary(&args)?;
++    if !args.ironbark_managed { maybe_reexec_to_fresher_binary(&args)?; }
+ 
+     // Blocking GitHub star consent gate: agree -> continue normally,
+     // disagree -> close the binary. Placed after the re-exec so the user is
+@@ -197,7 +198,7 @@ pub async fn run() -> Result<()> {
+     // over the screen. Skips automatically for non-interactive invocations
+     // (CI, piped I/O, --quiet, subcommands like serve/acp/run) and for users
+     // who already agreed (consent file on disk).
+-    crate::alphacode_github_star::ensure_star_consent_or_exit(&args);
++    if !args.ironbark_managed { crate::alphacode_github_star::ensure_star_consent_or_exit(&args); }
+ 
+     spawn_background_update_check(&args);
+ 
+@@ -310,7 +311,10 @@ pub fn register_external_provider_runtimes() {
+ }
+ 
+ fn parse_and_prepare_args() -> Result<Args> {
+-    let args = Args::parse();
++    let mut args = Args::parse();
++    if args.ironbark_managed {
++        super::ironbark_managed::prepare(&mut args)?;
++    }
+     startup_profile::mark("args_parse");
+ 
+     if let Some(chord) = args.spawn_hotkey.as_deref() {

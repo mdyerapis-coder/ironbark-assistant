@@ -8,7 +8,7 @@
 
 **Tech Stack:** `miuuyy/codex-chatgpt-web` commit `0b6087c5307c7a58adda9c420358f3f70d2035f5` (package 6.1.8), native Codex 0.162.1, Bun, contained private browser, typed core events; selected MIT receipt semantics from `chicogong` commit `0781dc2f18d853b77c546d5d59c6bed1243c5c47`.
 
-**Spec:** [design](../../../DESIGN.md) §6; [comparison and license decisions](../../../WEBGPT-COMPARISON.md); [master](2026-10-12-ironbark-assistant.md).
+**Spec:** [design](../../design/DESIGN.md) §6; [comparison and license decisions](../../design/WEBGPT-COMPARISON.md); [master](2026-10-12-ironbark-assistant.md).
 
 ## Global Constraints
 

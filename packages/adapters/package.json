@@ -1,0 +1,12 @@
+{
+  "name": "@ironbark/adapters",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "worker": "bun src/main.ts" },
+  "dependencies": {
+    "@oh-my-pi/pi-ai": "18.8.9",
+    "@oh-my-pi/pi-catalog": "18.8.9",
+    "@oh-my-pi/pi-utils": "18.8.9"
+  }
+}

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Tauri 2/WebKitGTK 4.1, TypeScript/Vite without a new frontend framework, DOMPurify/Markdown renderer, xterm 6/fit addon, system fonts, native GTK/KDE-compatible dialogs and Secret Service.
 
-**Spec:** [approved design](../../../DESIGN.md) §§2,10,11; [visual](../../../index.html), [Astra review](../../../ASTRA-REVIEW.md); [master](2026-10-12-ironbark-assistant.md).
+**Spec:** [approved design](../../design/DESIGN.md) §§2,10,11; [visual](../../design/index.html), [Astra review](../../design/ASTRA-REVIEW.md); [master](2026-10-12-ironbark-assistant.md).
 
 ## Global Constraints
 

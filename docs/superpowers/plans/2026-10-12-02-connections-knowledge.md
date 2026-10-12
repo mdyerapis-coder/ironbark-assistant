@@ -8,7 +8,7 @@
 
 **Tech Stack:** OMP `@oh-my-pi/pi-ai` 18.8.9, Bun/TypeScript, Rust/SQLite FTS5, Secret Service/explicit Bitwarden refs, local `pdftotext`, Pandoc, Tesseract and qualified transcription adapters.
 
-**Spec:** [design](../../../DESIGN.md) §§4,7,10; [master](2026-10-12-ironbark-assistant.md).
+**Spec:** [design](../../design/DESIGN.md) §§4,7,10; [master](2026-10-12-ironbark-assistant.md).
 
 ## Global Constraints
 

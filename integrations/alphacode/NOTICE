@@ -1,0 +1,65 @@
+AlphaCode maintained Ironbark permission boundary
+Upstream: https://github.com/dragonked2/alphacode
+Pinned source: 2a1d17156282e59fa811ceb58d9e28302d360fba (1.0.79)
+
+The maintained patch does not remove upstream copyright, bundled skill notices,
+or Cargo.lock dependency provenance. Dependency licenses remain those of their
+respective packages; building does not constitute a dependency/license audit.
+Redistributing a binary requires collecting notices for its actual locked build
+(including optional-feature selection). No binary was built or redistributed by
+this assignment. The upstream notice files present in this source are reproduced
+below; keep their original files in source distributions.
+
+Upstream LICENSE:
+MIT License
+
+Copyright (c) 2025-2026 Ali Essam
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+src/alphacode_base/bundled_skills/ctf/LICENSE.ctf-skills:
+MIT License
+
+Copyright (c) 2026 Lukasz Jagiello
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Upgrade qualification:
+This patch only targets the exact pinned commit, never latest/main. For an
+upgrade, repeat the native ToolContext/direct Tool::execute/Registry::execute
+reference audit (LSP when configured), socket/ACP/provider/background-hook audit,
+all regression tests, and genuine C3-denial/edit/resume/cancel/outbound capture.
+Regenerate patch, source/recipe digest, license inventory and executable hash.
+Never carry a qualified capability observation across a changed build identity.

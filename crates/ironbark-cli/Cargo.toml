@@ -1,0 +1,15 @@
+[package]
+name = "ironbark-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ ironbark-core = { path = "../ironbark-core" }
+ base64 = "0.22"
+ serde.workspace = true
+ serde_json.workspace = true
+ uuid.workspace = true
+ tokio.workspace = true
+ clap = { version = "4", features = ["derive"] }

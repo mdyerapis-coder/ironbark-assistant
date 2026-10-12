@@ -1,0 +1,16 @@
+{
+  "name": "ironbark-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "bun@1.4.3",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:adapters": "bun test packages/adapters/test",
+    "test:core": "cargo test --workspace"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/bun": "^1.3.0"
+  }
+}

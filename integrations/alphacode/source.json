@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/dragonked2/alphacode.git",
+  "commit": "2a1d17156282e59fa811ceb58d9e28302d360fba",
+  "git_tree": "e70d37fbbf3260e7b3029a738f5e8e31b3d87452",
+  "upstream_version": "1.0.79",
+  "checkout": ".sources/alphacode",
+  "patch_series": [
+    {
+      "path": "patches/0001-ironbark-permission-boundary.patch",
+      "sha256": "ac67492592cb7f72d836d4955e46df3a985939aabaaf8f673f9f78faa34e13a1",
+      "bytes": 134098
+    }
+  ],
+  "source_recipe_digest": "03058fab0522de6ed6e067322e23f677b0306ed50017ff39aece2f1f2c66c54e",
+  "digest_definition": "SHA256(ASCII(commit) || patch bytes || build.sh bytes || patched Cargo.lock bytes || rust-toolchain.toml bytes)",
+  "build_recipe": {
+    "path": "build.sh",
+    "sha256": "6fc615c6ecdef302533da8603202aba7453c971ba14f9566e1b0b1bd8725f292",
+    "rust": "1.94.1",
+    "command": "cargo +1.94.1 build --locked --release --no-default-features --bin alphacode",
+    "compiled_identity_env": "IRONBARK_ALPHACODE_BUILD_DIGEST",
+    "must_not_run_compiled_binary": true
+  },
+  "lock_sha256": "d3d1991553f4b791c30edabfbb478ae797509ea58a7d643bf453f47aecdfe737",
+  "licenses": [
+    {
+      "path": "LICENSE",
+      "sha256": "0987d065e3a91060bdc4ffc27e16d654eba9371362ff9137f39e46b8790a6bf4"
+    },
+    {
+      "path": "src/alphacode_base/bundled_skills/ctf/LICENSE.ctf-skills",
+      "sha256": "25fb2cfc684b4f1e510e8ecf2deeeedfe9ee80ebae4c41b806baa439857a394b"
+    }
+  ],
+  "binary_sha256": null,
+  "qualification": {
+    "state": "unqualified",
+    "build_executed": false,
+    "regressions_executed": false,
+    "live_smoke_executed": false,
+    "dependency_license_inventory": "pending actual locked binary build"
+  },
+  "security_prerequisites": [
+    "C3 owned direct sibling daemon and ACP under in-namespace controller",
+    "Separate private <=4096-byte inherited controller pipe per native process, identical namespace-visible controller_pid/daemon_pid/acp_pid; consume EOF and close within 5s",
+    "PR_SET_DUMPABLE(0) after exec in all trusted holders; deny ptrace/process_vm/proc-fd authority disclosure in C3",
+    "Core-created ActionSpec.canonical_args is exact complete NativeAction; core verifyAnswer is mandatory",
+    "No stock daemon attach, no auto/free profile; provider_profile equals RoutePin.connection_id",
+    "Independent C3 child-stop and outbound-deny evidence required before qualification",
+    "Hide credential/profile files from arbitrary native descendants; sanitized shell environment is not filesystem isolation",
+    "No native provider-bootstrap fd parser exists: C3 must not pass an unconsumed inheritable credential fd",
+    "Core-owned raw native event recording; concrete post-receipt native tool-start evidence, not pre-approval ToolExec"
+  ]
+}

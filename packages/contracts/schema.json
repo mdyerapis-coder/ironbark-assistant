@@ -1,0 +1,2478 @@
+{
+  "$defs": {
+    "ActionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_args": true,
+        "destination": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_state_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "policy_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "scope": true
+      },
+      "required": [
+        "id",
+        "run_id",
+        "project_id",
+        "kind",
+        "canonical_args",
+        "scope",
+        "policy_version",
+        "expected_state_digest"
+      ],
+      "type": "object"
+    },
+    "ApprovalGrant": {
+      "additionalProperties": false,
+      "properties": {
+        "action_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "action_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "expected_state_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "expires_at": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "policy_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "revoked_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "action_id",
+        "action_digest",
+        "policy_version",
+        "expected_state_digest",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "AuthRef": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "type": "string"
+            },
+            "service": {
+              "type": "string"
+            },
+            "type": {
+              "const": "secret_service",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "service",
+            "account"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string"
+            },
+            "item_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "bitwarden",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "item_id",
+            "field"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "harness": {
+              "$ref": "#/$defs/HarnessKind"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "type": {
+              "const": "native_session",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "harness",
+            "profile"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BillingObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_microusd": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/BillingState"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "BillingState": {
+      "enum": [
+        "unknown",
+        "reported"
+      ],
+      "type": "string"
+    },
+    "CapabilityObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "implementation_version": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/CapabilityState"
+        }
+      },
+      "required": [
+        "name",
+        "state",
+        "implementation_version",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "CapabilityState": {
+      "enum": [
+        "unknown",
+        "unavailable",
+        "unqualified",
+        "qualified"
+      ],
+      "type": "string"
+    },
+    "CheckReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "details": {
+          "type": "string"
+        },
+        "evidence_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "details"
+      ],
+      "type": "object"
+    },
+    "Citation": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "$ref": "#/$defs/CitationLocator"
+        },
+        "revision_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "source_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "revision_digest",
+        "locator"
+      ],
+      "type": "object"
+    },
+    "CitationLocator": {
+      "additionalProperties": false,
+      "properties": {
+        "bounding_box": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "cell_range": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line_end": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "line_start": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "page": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "section": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sheet": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time_end_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "time_start_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CitedExcerpt": {
+      "additionalProperties": false,
+      "properties": {
+        "citation": {
+          "$ref": "#/$defs/Citation"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "citation"
+      ],
+      "type": "object"
+    },
+    "ClientFrame": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "protocol": {
+              "format": "uint8",
+              "maximum": 1,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "session_nonce": {
+              "type": "string"
+            },
+            "type": {
+              "const": "hello",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "protocol",
+            "session_nonce"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/CoreCommand"
+            },
+            "request_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "request",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "after_seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "subscribe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "after_seq"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ConnectionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_projects": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "auth_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AuthRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/ModelDescriptor"
+          },
+          "type": "array"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProviderProtocol"
+        }
+      },
+      "required": [
+        "id",
+        "protocol",
+        "endpoint",
+        "models",
+        "allowed_projects"
+      ],
+      "type": "object"
+    },
+    "ContentPart": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mime_type": {
+              "type": "string"
+            },
+            "type": {
+              "const": "image",
+              "type": "string"
+            },
+            "uri": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "uri",
+            "mime_type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mime_type": {
+              "type": "string"
+            },
+            "type": {
+              "const": "audio",
+              "type": "string"
+            },
+            "uri": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "uri",
+            "mime_type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "artifact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ContextPackage": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "brief": {
+          "type": "string"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "excerpts": {
+          "items": {
+            "$ref": "#/$defs/CitedExcerpt"
+          },
+          "type": "array"
+        },
+        "originating_sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionRef"
+          },
+          "type": "array"
+        },
+        "unresolved_questions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "digest",
+        "brief",
+        "constraints",
+        "excerpts",
+        "artifacts",
+        "unresolved_questions",
+        "originating_sessions"
+      ],
+      "type": "object"
+    },
+    "CoreCommand": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "after": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "events",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "after"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "project_list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "root": {
+              "type": "string"
+            },
+            "type": {
+              "const": "project_create",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "root"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "doctor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "shutdown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "artifact_read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "artifact_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/ImportSource"
+            },
+            "type": {
+              "const": "import_preview",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "preview_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "import_apply",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "preview_digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "destination": {
+              "type": "string"
+            },
+            "type": {
+              "const": "backup_create",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "destination"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "retention_sweep",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "object_capacity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "conversation_create",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "conversation_history",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "conversation_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "conversation_rename",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "conversation_id",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "include_archived": {
+              "type": "boolean"
+            },
+            "limit": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            },
+            "type": {
+              "const": "conversation_search",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "query",
+            "include_archived",
+            "limit"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "format": {
+              "$ref": "#/$defs/ExportFormat"
+            },
+            "type": {
+              "const": "conversation_export",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "conversation_id",
+            "format"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "parts": {
+              "items": {
+                "$ref": "#/$defs/ContentPart"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "conversation_edit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "parts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "branch_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ContextPackage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "conversation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "parts": {
+              "items": {
+                "$ref": "#/$defs/ContentPart"
+              },
+              "type": "array"
+            },
+            "pin": {
+              "$ref": "#/$defs/RoutePin"
+            },
+            "type": {
+              "const": "conversation_queue_turn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "conversation_id",
+            "branch_id",
+            "parts",
+            "pin"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "pin": {
+              "$ref": "#/$defs/RoutePin"
+            },
+            "type": {
+              "const": "conversation_regenerate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "pin"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "conversation_archive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "conversation_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "resolution": {
+              "$ref": "#/$defs/RunResolution"
+            },
+            "type": {
+              "const": "conversation_delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "conversation_id",
+            "resolution"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_interrupt",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "run_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CoreEvent": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "turn_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "delta": {
+              "type": "string"
+            },
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "text_delta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "delta"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_replace",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "delta": {
+              "type": "string"
+            },
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "reasoning_delta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "delta"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "call": {
+              "$ref": "#/$defs/ProviderToolCall"
+            },
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "provider_tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "call"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": true,
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "route": {
+              "$ref": "#/$defs/RoutePin"
+            },
+            "type": {
+              "const": "provider_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "content",
+            "route"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/ActionSpec"
+            },
+            "type": {
+              "const": "tool_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "result": true,
+            "type": {
+              "const": "tool_finished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "action_id",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/ActionSpec"
+            },
+            "type": {
+              "const": "approval_needed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "entity_id": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "type": {
+              "const": "state_changed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entity_id",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "session": {
+              "$ref": "#/$defs/SessionRef"
+            },
+            "type": {
+              "const": "session_bound",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "type": {
+              "const": "artifact_added",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact_id",
+            "digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "judgment": {
+              "$ref": "#/$defs/JudgmentRecord"
+            },
+            "type": {
+              "const": "judgment_recorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "judgment"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "usage_observed",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/UsageObservation"
+            }
+          },
+          "required": [
+            "type",
+            "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "details": true,
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message",
+            "details"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/RunState"
+            },
+            "stop_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "turn_finished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CoreReply": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "ok",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "details": true,
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message",
+            "details"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "EventEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "$ref": "#/$defs/CoreEvent"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "protocol": {
+          "format": "uint8",
+          "maximum": 1,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "request_id": {
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "protocol",
+        "seq",
+        "timestamp",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "ExportFormat": {
+      "enum": [
+        "json",
+        "markdown"
+      ],
+      "type": "string"
+    },
+    "HarnessKind": {
+      "enum": [
+        "omp",
+        "codex",
+        "opencode",
+        "claude",
+        "hermes",
+        "alphacode"
+      ],
+      "type": "string"
+    },
+    "ImportFormat": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "document",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "origin": {
+              "type": "string"
+            },
+            "type": {
+              "const": "native_transcript",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "origin"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ImportSource": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/ImportFormat",
+          "default": {
+            "type": "document"
+          }
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "JudgmentInput": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "criterion": {
+          "type": "string"
+        },
+        "decision_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "domain_version": {
+          "type": "string"
+        },
+        "input_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "route_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "required": [
+        "decision_id",
+        "domain",
+        "domain_version",
+        "candidates",
+        "input_refs",
+        "input_digest",
+        "criterion",
+        "route_policy_digest"
+      ],
+      "type": "object"
+    },
+    "JudgmentRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_codes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "candidates": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "choice": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "criterion": {
+          "type": "string"
+        },
+        "decision_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "domain_version": {
+          "type": "string"
+        },
+        "input_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "input_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "latency_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model_identity": {
+          "type": "string"
+        },
+        "prompt_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "qualification_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route_policy_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "runtime_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "score": {
+          "$ref": "#/$defs/ScoreEvidence"
+        },
+        "state": {
+          "$ref": "#/$defs/JudgmentState"
+        }
+      },
+      "required": [
+        "decision_id",
+        "domain",
+        "domain_version",
+        "candidates",
+        "input_refs",
+        "input_digest",
+        "criterion",
+        "route_policy_digest",
+        "model_identity",
+        "runtime_identity_digest",
+        "prompt_digest",
+        "candidate_codes",
+        "state",
+        "score",
+        "latency_ms"
+      ],
+      "type": "object"
+    },
+    "JudgmentState": {
+      "enum": [
+        "available",
+        "invalid",
+        "abstain",
+        "unqualified",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ModelDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/CapabilityObservation"
+          },
+          "type": "array"
+        },
+        "context_limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "output_limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "context_limit",
+        "output_limit",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "OpenSessionInput": {
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/ContextPackage"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/ProjectPolicy"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "route": {
+          "$ref": "#/$defs/RoutePin"
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "project_id",
+        "cwd",
+        "route",
+        "context",
+        "policy"
+      ],
+      "type": "object"
+    },
+    "PermissionAnswer": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ActionSpec"
+        },
+        "decision": {
+          "$ref": "#/$defs/PermissionDecision"
+        },
+        "grant": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalGrant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "native_request_id",
+        "action",
+        "decision"
+      ],
+      "type": "object"
+    },
+    "PermissionDecision": {
+      "enum": [
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "ProjectPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_unknown_cost": {
+          "type": "boolean"
+        },
+        "allowed_connection_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "allowed_tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "local_only": {
+          "type": "boolean"
+        },
+        "max_cost_microusd": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_requests": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_workers": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "network_destinations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "read_roots": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "spend_policy": {
+          "$ref": "#/$defs/SpendPolicy"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "write_roots": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "version",
+        "project_id",
+        "allowed_connection_ids",
+        "allowed_tools",
+        "read_roots",
+        "write_roots",
+        "network_destinations",
+        "local_only",
+        "max_workers",
+        "max_requests",
+        "spend_policy",
+        "allow_unknown_cost"
+      ],
+      "type": "object"
+    },
+    "ProviderProtocol": {
+      "enum": [
+        "openai_completions",
+        "openai_responses",
+        "anthropic",
+        "gemini",
+        "ollama",
+        "llama_cpp",
+        "custom"
+      ],
+      "type": "string"
+    },
+    "ProviderToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": true,
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments"
+      ],
+      "type": "object"
+    },
+    "ResultManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptance_satisfied": {
+          "type": "boolean"
+        },
+        "artifacts": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/CheckReceipt"
+          },
+          "type": "array"
+        },
+        "native_session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "unresolved": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "run_id",
+        "artifacts",
+        "checks",
+        "acceptance_satisfied",
+        "unresolved"
+      ],
+      "type": "object"
+    },
+    "RoutePin": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_id": {
+          "type": "string"
+        },
+        "harness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarnessKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "connection_id",
+        "model_id"
+      ],
+      "type": "object"
+    },
+    "RunResolution": {
+      "additionalProperties": false,
+      "description": "Resolution asserts only the expected run set, never authorizes a state\ntransition. Terminal run state must already be committed by C4.",
+      "properties": {
+        "run_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "run_ids"
+      ],
+      "type": "object"
+    },
+    "RunState": {
+      "enum": [
+        "queued",
+        "ready",
+        "running",
+        "awaiting_approval",
+        "blocked",
+        "reviewing",
+        "verifying",
+        "paused",
+        "cancelling",
+        "cancelled",
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "ScoreEvidence": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "token": {
+              "type": "string"
+            },
+            "token_position": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "raw_token_log_prob",
+              "type": "string"
+            },
+            "value": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "value",
+            "token",
+            "token_position"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "calibrator_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "dataset_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "type": {
+              "const": "calibrated_selective_risk",
+              "type": "string"
+            },
+            "upper_error_bound": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "upper_error_bound",
+            "dataset_digest",
+            "calibrator_digest"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ServerFrame": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "protocol": {
+              "format": "uint8",
+              "maximum": 1,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": {
+              "const": "hello",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "protocol"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reply": {
+              "$ref": "#/$defs/CoreReply"
+            },
+            "request_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "reply",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "reply"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "$ref": "#/$defs/EventEnvelope"
+            },
+            "type": {
+              "const": "event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "event"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "after_seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message",
+            "after_seq"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SessionRef": {
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "harness": {
+          "$ref": "#/$defs/HarnessKind"
+        },
+        "native_id": {
+          "type": "string"
+        },
+        "native_version": {
+          "type": "string"
+        },
+        "project_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resolved_route": {
+          "$ref": "#/$defs/RoutePin"
+        }
+      },
+      "required": [
+        "harness",
+        "native_id",
+        "native_version",
+        "project_id",
+        "cwd",
+        "resolved_route"
+      ],
+      "type": "object"
+    },
+    "SpendPolicy": {
+      "enum": [
+        "free_only",
+        "paid_allowed"
+      ],
+      "type": "string"
+    },
+    "ToolDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "input_schema": true,
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema"
+      ],
+      "type": "object"
+    },
+    "TurnInput": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_tools": {
+          "items": {
+            "$ref": "#/$defs/ToolDescriptor"
+          },
+          "type": "array"
+        },
+        "budget": {
+          "$ref": "#/$defs/ProjectPolicy"
+        },
+        "content": {
+          "items": {
+            "$ref": "#/$defs/ContentPart"
+          },
+          "type": "array"
+        },
+        "message_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "message_id",
+        "content",
+        "allowed_tools",
+        "budget"
+      ],
+      "type": "object"
+    },
+    "UsageObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "billing": {
+          "$ref": "#/$defs/BillingObservation"
+        },
+        "cost_microusd": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/UsageSource"
+        }
+      },
+      "required": [
+        "billing",
+        "source"
+      ],
+      "type": "object"
+    },
+    "UsageSource": {
+      "enum": [
+        "provider",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "WorkerEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "$ref": "#/$defs/CoreEvent"
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "turn_id",
+        "run_id",
+        "payload"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "client": {
+      "$ref": "#/$defs/ClientFrame"
+    },
+    "context": {
+      "$ref": "#/$defs/ContextPackage"
+    },
+    "judgment_input": {
+      "$ref": "#/$defs/JudgmentInput"
+    },
+    "open_session": {
+      "$ref": "#/$defs/OpenSessionInput"
+    },
+    "permission": {
+      "$ref": "#/$defs/PermissionAnswer"
+    },
+    "policy": {
+      "$ref": "#/$defs/ProjectPolicy"
+    },
+    "provider": {
+      "$ref": "#/$defs/ConnectionConfig"
+    },
+    "result": {
+      "$ref": "#/$defs/ResultManifest"
+    },
+    "server": {
+      "$ref": "#/$defs/ServerFrame"
+    },
+    "turn": {
+      "$ref": "#/$defs/TurnInput"
+    },
+    "worker_event": {
+      "$ref": "#/$defs/WorkerEvent"
+    }
+  },
+  "required": [
+    "client",
+    "server",
+    "policy",
+    "context",
+    "result",
+    "provider",
+    "judgment_input",
+    "worker_event",
+    "open_session",
+    "turn",
+    "permission"
+  ],
+  "title": "ContractSchema",
+  "type": "object",
+  "x-ironbark-protocol": 1
+}

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 1.98.1, Tauri 2, Tokio, SQLite WAL/FTS5, TypeScript/Vite, Bun 1.4.3, OMP SDK 18.8.9, ACP SDK 1.8.0, Bubblewrap, system Secret Service, optional explicit Bitwarden references.
 
-**Spec:** [approved design](../../../DESIGN.md), [WebGPT selection](../../../WEBGPT-COMPARISON.md), [AlphaCode assessment](../../../ALPHACODE-ASSESSMENT.md), [approved visual](../../../index.html). Copy this whole design bundle into the implementation repository's `docs/design/` before execution, and update Spec links in the copied plans to `../../design/`.
+**Spec:** [approved design](../../design/DESIGN.md), [WebGPT selection](../../design/WEBGPT-COMPARISON.md), [AlphaCode assessment](../../design/ALPHACODE-ASSESSMENT.md), [approved visual](../../design/index.html). This repository contains the approved design bundle under `docs/design/`; the original planning deliverable remains untouched.
 
 ## Global Constraints
 
