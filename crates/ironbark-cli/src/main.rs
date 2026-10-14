@@ -8,8 +8,9 @@ use clap::{Parser, Subcommand};
 use ironbark_core::{
     conversations::{ExportFormat, RunResolution},
     contracts::{
-        ArtifactId, BranchId, ContentPart, ConversationId, CoreCommand, CoreReply, Digest, MessageId,
-        ProjectId, RunId, RoutePin,
+        ArtifactId, BranchId, CheckpointPhase, ContentPart, ConversationId, CoreCommand, CoreReply,
+        Digest, HarnessKind, MessageId, ProjectId, RecoveryDecision, ResultManifest, RunId,
+        RoutePin,
     },
     error::CoreError,
     ipc::CoreClient,
@@ -47,6 +48,10 @@ enum Command {
     ObjectCapacity { #[arg(long)] project: String },
     /// Conversation tree operations.
     Conversation { #[command(subcommand)] command: ConversationCommand },
+    /// Run scheduler lifecycle (create, start, pause, resume, inspect, reconcile).
+    Run { #[command(subcommand)] command: RunCommand },
+    /// Run checkpoints (a CAS manifest link for one run phase).
+    Checkpoint { #[command(subcommand)] command: CheckpointCommand },
     /// Generic core command: the full `CoreCommand` as one JSON argument.
     #[command(name = "command")]
     Raw { #[arg(value_name = "COMMAND_JSON")] json: String },
@@ -100,6 +105,63 @@ enum ConversationCommand {
     Regenerate { #[arg(long)] message: String, #[arg(long)] pin: String },
     Archive { #[arg(long)] conversation: String },
     Delete { #[arg(long)] conversation: String, #[arg(long)] run: Vec<String> },
+}
+
+#[derive(Subcommand)]
+enum RunCommand {
+    /// Create a queued run for a task. `--workspace` is folded into the task text as an
+    /// explicit note (the protocol carries `project_id` + `task` only).
+    Create {
+        #[arg(long)] project: String,
+        #[arg(long)] task: String,
+        #[arg(long)] workspace: Option<std::path::PathBuf>,
+    },
+    /// Transition a queued run to running. The pin flags build the `RoutePin`.
+    Start {
+        #[arg(long)] project: String,
+        #[arg(long)] run: String,
+        #[arg(long, default_value = "")] connection: String,
+        #[arg(long, default_value = "")] model: String,
+        /// omp | codex | opencode | claude | hermes | alphacode
+        #[arg(long)] harness: Option<String>,
+    },
+    /// Move a running run to paused.
+    Pause { #[arg(long)] project: String, #[arg(long)] run: String },
+    /// Move a paused run back to running.
+    Resume { #[arg(long)] project: String, #[arg(long)] run: String },
+    /// Request cancellation of a run.
+    Cancel { #[arg(long)] project: String, #[arg(long)] run: String },
+    /// Record an observed native process stop for a run.
+    ObserveStop { #[arg(long)] project: String, #[arg(long)] run: String },
+    /// Record that the native harness reported its own run complete.
+    NativeDone {
+        #[arg(long)] project: String,
+        #[arg(long)] run: String,
+        /// Native harness completion receipt text.
+        #[arg(long, default_value = "")] receipt: String,
+    },
+    /// Print the recovery report for a run.
+    Inspect { #[arg(long)] project: String, #[arg(long)] run: String },
+    /// Apply a recovery decision to an interrupted run:
+    /// accept-observed | resume-read-only | continue-from-checkpoint | abandon.
+    Reconcile {
+        #[arg(long)] project: String,
+        #[arg(long)] run: String,
+        #[arg(long)] decision: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum CheckpointCommand {
+    /// Capture a checkpoint for a run phase, parsing the manifest file as a
+    /// `ResultManifest`; prints the returned artifact id DTO.
+    Capture {
+        #[arg(long)] project: String,
+        #[arg(long)] run: String,
+        /// planned | pre-mutation | post-mutation | post-verification | pre-consequential
+        #[arg(long)] phase: String,
+        #[arg(long)] manifest: std::path::PathBuf,
+    },
 }
 
 // The core ID newtypes are transparent Uuid wrappers; parse from the CLI string form.
@@ -192,6 +254,8 @@ impl Command {
             Command::Retention { command: RetentionCommand::Sweep } => C::RetentionSweep {},
             Command::ObjectCapacity { project } => C::ObjectCapacity { project_id: project_id(project)? },
             Command::Conversation { command } => command.build()?,
+            Command::Run { command } => command.build()?,
+            Command::Checkpoint { command } => command.build()?,
             // Handled directly in run() before build is reached.
             Command::Events { .. } => return Err("events streams directly; use the events subcommand".into()),
             Command::Raw { json } => serde_json::from_str(json).map_err(display)?,
@@ -227,6 +291,95 @@ impl ConversationCommand {
             }
         })
     }
+}
+
+impl RunCommand {
+    fn build(&self) -> Result<CoreCommand, String> {
+        use CoreCommand as C;
+        Ok(match self {
+            RunCommand::Create { project, task, workspace } => {
+                // The protocol carries `project_id` + `task` only; a requested workspace is an
+                // explicit, bounded note appended to the task text.
+                let task = match workspace {
+                    Some(dir) => format!("{task}\n\n[workspace] {}", dir.display()),
+                    None => task.clone(),
+                };
+                C::RunCreate { project_id: project_id(project)?, task }
+            }
+            RunCommand::Start { project, run, connection, model, harness } => {
+                let harness = match harness {
+                    Some(kind) => Some(parse_harness(kind)?),
+                    None => None,
+                };
+                C::RunStart {
+                    project_id: project_id(project)?,
+                    run_id: run_id(run)?,
+                    pin: RoutePin { connection_id: connection.clone(), model_id: model.clone(), harness },
+                    native_session: None,
+                    artifacts: Vec::new(),
+                    recorded_pid: None,
+                    recorded_start_time: None,
+                }
+            }
+            RunCommand::Pause { project, run } => C::RunPause { project_id: project_id(project)?, run_id: run_id(run)? },
+            RunCommand::Resume { project, run } => C::RunResume { project_id: project_id(project)?, run_id: run_id(run)? },
+            RunCommand::Cancel { project, run } => C::RunCancel { project_id: project_id(project)?, run_id: run_id(run)? },
+            RunCommand::ObserveStop { project, run } => C::RunObserveStop { project_id: project_id(project)?, run_id: run_id(run)? },
+            RunCommand::NativeDone { project, run, receipt } => C::RunNativeDone { project_id: project_id(project)?, run_id: run_id(run)?, receipt: receipt.clone() },
+            RunCommand::Inspect { project, run } => C::RunInspect { project_id: project_id(project)?, run_id: run_id(run)? },
+            RunCommand::Reconcile { project, run, decision } => C::RunReconcile {
+                project_id: project_id(project)?, run_id: run_id(run)?, decision: parse_recovery_decision(decision)?,
+            },
+        })
+    }
+}
+
+impl CheckpointCommand {
+    fn build(&self) -> Result<CoreCommand, String> {
+        use CoreCommand as C;
+        Ok(match self {
+            CheckpointCommand::Capture { project, run, phase, manifest } => {
+                let raw = std::fs::read_to_string(manifest).map_err(|e| format!("read manifest {manifest:?}: {e}"))?;
+                let manifest = serde_json::from_str::<ResultManifest>(&raw).map_err(|e| format!("manifest: {e}"))?;
+                C::RunCheckpoint {
+                    project_id: project_id(project)?, run_id: run_id(run)?, phase: parse_checkpoint_phase(phase)?, manifest,
+                }
+            }
+        })
+    }
+}
+
+fn parse_harness(raw: &str) -> Result<HarnessKind, String> {
+    Ok(match raw {
+        "omp" => HarnessKind::Omp,
+        "codex" => HarnessKind::Codex,
+        "opencode" => HarnessKind::Opencode,
+        "claude" => HarnessKind::Claude,
+        "hermes" => HarnessKind::Hermes,
+        "alphacode" => HarnessKind::Alphacode,
+        other => return Err(format!("run start --harness must be omp, codex, opencode, claude, hermes or alphacode, got {other:?}")),
+    })
+}
+
+fn parse_checkpoint_phase(raw: &str) -> Result<CheckpointPhase, String> {
+    Ok(match raw {
+        "planned" => CheckpointPhase::Planned,
+        "pre-mutation" => CheckpointPhase::PreMutation,
+        "post-mutation" => CheckpointPhase::PostMutation,
+        "post-verification" => CheckpointPhase::PostVerification,
+        "pre-consequential" => CheckpointPhase::PreConsequential,
+        other => return Err(format!("checkpoint capture --phase must be planned, pre-mutation, post-mutation, post-verification or pre-consequential, got {other:?}")),
+    })
+}
+
+fn parse_recovery_decision(raw: &str) -> Result<RecoveryDecision, String> {
+    Ok(match raw {
+        "accept-observed" => RecoveryDecision::AcceptObserved,
+        "resume-read-only" => RecoveryDecision::ResumeReadOnly,
+        "continue-from-checkpoint" => RecoveryDecision::ContinueFromCheckpoint,
+        "abandon" => RecoveryDecision::Abandon,
+        other => return Err(format!("run reconcile --decision must be accept-observed, resume-read-only, continue-from-checkpoint or abandon, got {other:?}")),
+    })
 }
 
 // `artifact read` returns base64 in the DTO; the raw bytes are what a caller wants on stdout.

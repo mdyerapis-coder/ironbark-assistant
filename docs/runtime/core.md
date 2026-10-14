@@ -148,3 +148,55 @@ bun qa/smoke/worker-containment.ts
 This is not a complete application, native harness, provider account, JEV domain or release
 qualification. C4 run scheduling/live provider launch, the live provider/JEV/AlphaCode
 smokes and the `run create`/`checkpoint` CLI commands remain outstanding.
+
+## Run scheduling and crash reconciliation (C4)
+
+A run is the durable unit of work. It is born `queued` and every state change is
+applied through the transition table in `crates/ironbark-core/src/scheduler/state.rs`;
+no worker event and no frontend label writes `runs.state`.
+
+| Command | Effect |
+| --- | --- |
+| `run create` | Mints the job/node/run chain for one task text. Requires an existing project; the task is bounded and redacted. Returns `{run_id, node_id, job_id, state}`. |
+| `run start` | Admits `queued → ready` through the table, records the native session, partial artifacts and the observed process identity (pid + boot start ticks), then `ready → running`. |
+| `run checkpoint` | Captures a phase-tagged checkpoint (`planned`, `pre_mutation`, `post_mutation`, `post_verification`, `pre_consequential`) plus its manifest as a CAS object; returns the artifact id. |
+| `run inspect` | Read-only crash inspection: durable state, latest checkpoint, the recorded process identity (live / start-time match / `reused`), pending mutation and uncertain actions, plus recommended decisions. |
+| `run reconcile` | Applies one owner decision: `accept_observed`, `resume_read_only`, `continue_from_checkpoint` or `abandon`, under current authority. |
+| `run pause` / `run resume` | Retains the native session and partial artifacts; a UI disconnect never pauses a run. |
+| `run cancel` / `run observe_stop` | A cancel *request* only reaches `cancelling`; `cancelled` requires the observed stop receipt. |
+| `run native_done` | Native completion parks the run in `reviewing`. Success requires an explicit acceptance backed by a passing post-verification checkpoint. |
+
+Reconciliation rules that the code enforces:
+
+- `accept_observed` is refused while any consumed grant has no durable outcome
+  (`outcome_unresolved`), and refused unless the latest checkpoint is a passing
+  post-verification checkpoint (`acceptance_evidence_missing`) — a native
+  completion label is never a false success.
+- `continue_from_checkpoint` refuses to reuse a grant that is stale under the
+  current policy (`stale_grant`); the run parks in `awaiting_approval` for fresh
+  owner approval instead.
+- A mutation without a durable consumption receipt moves the run to `blocked`
+  (`mutation_without_receipt`) and is not performed.
+- Inspection never signals anything: a PID recycled by an unrelated process is
+  reported (`reused: true`), never killed, and no uncertain mutation is replayed.
+
+The recorded start time must be the value the core can observe for that pid
+(`/proc/<pid>/stat` field 22, clock ticks since boot). A wall-clock value is
+misread as a recycled PID.
+
+## Run and checkpoint CLI commands
+
+The scheduler lifecycle is exposed through typed CLI subcommands, each printing
+exactly one JSON DTO on stdout (the core's own DTO — never a re-shaped copy):
+
+| Command | Effect |
+| --- | --- |
+| `run create --project <id> --task <text> [--workspace <dir>]` | Creates the queued job/node/run chain and prints the `RunReceipt`. `--workspace` is recorded as an explicit note in the task text: the protocol's `RunCreate` carries `project_id` + `task` only. |
+| `run start --project <id> --run <id> [--connection <id>] [--model <id>] [--harness <kind>]` | Admits the queued run and starts it; the pin flags build the `RoutePin`. |
+| `run pause` / `run resume` / `run cancel` / `run observe-stop` / `run native-done` | The matching lifecycle transition. A cancel *request* never becomes a stop receipt; `observe-stop` carries the observed stop. |
+| `run inspect --project <id> --run <id>` | Prints the `RecoveryReport` (`run_state`, `recorded_pid`, `pending_mutation`, `uncertain_actions`, `checkpoint`, `recommended`). |
+| `run reconcile --project <id> --run <id> --decision <accept-observed\|resume-read-only\|continue-from-checkpoint\|abandon>` | Applies one reconciliation decision under current authority. |
+| `checkpoint capture --project <id> --run <id> --phase <planned\|pre-mutation\|post-mutation\|post-verification\|pre-consequential> --manifest <file>` | Parses the manifest file as a `ResultManifest`, captures the checkpoint as a CAS object and prints the artifact id. |
+
+The generic escape hatch remains available for anything not yet given a typed
+subcommand: `ironbark-cli command --request-id <uuid> '<CoreCommand JSON>'`.

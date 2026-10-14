@@ -91,6 +91,36 @@
       ],
       "type": "object"
     },
+    "ApprovedTarget": {
+      "additionalProperties": false,
+      "description": "The operator-issued scope for one automation target. Existence of a matching,\nunexpired, un-released scope is the owner's standing consent for that exact\n(kind, target) pair; a worker can never mint one.",
+      "properties": {
+        "expires_at": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/TargetKind"
+        },
+        "role": {
+          "$ref": "#/$defs/ScopeRole"
+        },
+        "scope_id": {
+          "type": "string"
+        },
+        "target_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope_id",
+        "role",
+        "kind",
+        "target_id",
+        "expires_at"
+      ],
+      "type": "object"
+    },
     "AuthRef": {
       "oneOf": [
         {
@@ -259,6 +289,16 @@
       ],
       "type": "object"
     },
+    "CheckpointPhase": {
+      "enum": [
+        "planned",
+        "pre_mutation",
+        "post_mutation",
+        "post_verification",
+        "pre_consequential"
+      ],
+      "type": "string"
+    },
     "Citation": {
       "additionalProperties": false,
       "properties": {
@@ -377,6 +417,56 @@
         "citation",
         "project_id",
         "disclosure"
+      ],
+      "type": "object"
+    },
+    "ClassMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "abstained": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "accepted": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "invalid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unavailable": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unqualified": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wrong": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "accepted",
+        "wrong",
+        "abstained",
+        "invalid",
+        "unavailable",
+        "unqualified"
       ],
       "type": "object"
     },
@@ -1096,6 +1186,781 @@
             "run_id"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "task": {
+              "type": "string"
+            },
+            "type": {
+              "const": "run_create",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "task"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifacts": {
+              "default": [],
+              "items": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "native_session": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionRef"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pin": {
+              "$ref": "#/$defs/RoutePin"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "recorded_pid": {
+              "default": null,
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "recorded_start_time": {
+              "default": null,
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id",
+            "pin"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_pause",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_resume",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "manifest": {
+              "$ref": "#/$defs/ResultManifest"
+            },
+            "phase": {
+              "$ref": "#/$defs/CheckpointPhase"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_checkpoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id",
+            "phase",
+            "manifest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_inspect",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/RecoveryDecision"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_reconcile",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_cancel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_observe_stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "receipt": {
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_native_done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "run_id",
+            "receipt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "disclosure": {
+              "$ref": "#/$defs/DisclosurePolicy"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/SourceInput"
+            },
+            "type": {
+              "const": "knowledge_ingest",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "source",
+            "disclosure"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            },
+            "type": {
+              "const": "knowledge_retrieve",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "query",
+            "limit"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "citation": {
+              "$ref": "#/$defs/Citation"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "knowledge_open_citation",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "citation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "source_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "knowledge_delete_source",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "source_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            },
+            "type": {
+              "const": "knowledge_build_context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "query",
+            "limit"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "memory_propose",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "text",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "candidate_id": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/MemoryDecision"
+            },
+            "edited_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "memory_decide",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "candidate_id",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "record_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "memory_forget",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "record_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            },
+            "type": {
+              "const": "knowledge_search_memory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "query",
+            "limit"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/EmbeddingModelIdentity"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "knowledge_embed_index",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "model"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/EmbeddingModelIdentity"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            },
+            "type": {
+              "const": "knowledge_embed_query",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "model",
+            "query"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection": {
+              "$ref": "#/$defs/ConnectionConfig"
+            },
+            "type": {
+              "const": "web_gpt_probe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "connection"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "web_gpt_activate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "connection_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/ContentPart"
+              },
+              "type": "array"
+            },
+            "idempotency_key": {
+              "type": "string"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "web_gpt_submit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "run_id",
+            "content",
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "receipt_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "web_gpt_resubmit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "run_id",
+            "receipt_digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "input": {
+              "$ref": "#/$defs/WebGptTurnInput"
+            },
+            "run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "web_gpt_turn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "run_id",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "calibrator_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "domain": {
+              "$ref": "#/$defs/JudgmentDomain"
+            },
+            "report": {
+              "$ref": "#/$defs/EvaluationReportInput"
+            },
+            "type": {
+              "const": "judgment_qualify",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "domain",
+            "report",
+            "calibrator_digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "domain": {
+              "$ref": "#/$defs/JudgmentDomain"
+            },
+            "type": {
+              "const": "judgment_qualification_list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "domain"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "$ref": "#/$defs/ApprovedTarget"
+            },
+            "type": {
+              "const": "automation_observe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/ActionSpec"
+            },
+            "expected_state_digest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "grant": {
+              "$ref": "#/$defs/ApprovalGrant"
+            },
+            "type": {
+              "const": "automation_execute",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "action",
+            "grant",
+            "expected_state_digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "scope_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "automation_release",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "scope_id"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1528,6 +2393,92 @@
         }
       ]
     },
+    "EmbeddingModelIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_id": {
+          "type": "string"
+        },
+        "dimensions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "connection_id",
+        "model_id",
+        "version",
+        "dimensions"
+      ],
+      "type": "object"
+    },
+    "EvaluationReportInput": {
+      "additionalProperties": false,
+      "description": "The TS `EvaluationReport`, re-derivable and re-gated here. `state` and\n`reasons` on the wire are ignored: the core re-derives them from the raw\ncounts before persisting anything.",
+      "properties": {
+        "claimed_identity": {
+          "$ref": "#/$defs/Digest"
+        },
+        "confidence_method": {
+          "type": "string"
+        },
+        "dataset_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "domain": {
+          "$ref": "#/$defs/JudgmentDomain"
+        },
+        "domain_version": {
+          "type": "string"
+        },
+        "evaluated_at": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "holdout": {
+          "$ref": "#/$defs/HoldoutMetrics"
+        },
+        "latency_ms": {
+          "$ref": "#/$defs/LatencyMs"
+        },
+        "observed_identity_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "observed_model_identity": {
+          "type": "string"
+        },
+        "prompt_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "split_digests": {
+          "$ref": "#/$defs/SplitDigests"
+        }
+      },
+      "required": [
+        "domain",
+        "domain_version",
+        "dataset_digest",
+        "prompt_digest",
+        "split_digests",
+        "observed_identity_digest",
+        "observed_model_identity",
+        "claimed_identity",
+        "confidence_method",
+        "holdout",
+        "latency_ms"
+      ],
+      "type": "object"
+    },
     "EventEnvelope": {
       "additionalProperties": false,
       "properties": {
@@ -1597,6 +2548,73 @@
       ],
       "type": "string"
     },
+    "HoldoutMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "abstained": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "accepted": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "by_class": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ClassMetrics"
+          },
+          "type": "object"
+        },
+        "coverage": {
+          "format": "double",
+          "type": "number"
+        },
+        "invalid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unavailable": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unqualified": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "upper_error_bound": {
+          "format": "double",
+          "type": "number"
+        },
+        "wrong_accepted": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "accepted",
+        "wrong_accepted",
+        "abstained",
+        "invalid",
+        "unavailable",
+        "unqualified",
+        "coverage",
+        "upper_error_bound",
+        "by_class"
+      ],
+      "type": "object"
+    },
     "ImportFormat": {
       "oneOf": [
         {
@@ -1648,6 +2666,16 @@
         "path"
       ],
       "type": "object"
+    },
+    "JudgmentDomain": {
+      "enum": [
+        "task_intent",
+        "retrieval_relevance",
+        "handoff_completeness",
+        "evidence_needed",
+        "allowed_route_choice"
+      ],
+      "type": "string"
     },
     "JudgmentInput": {
       "additionalProperties": false,
@@ -1805,6 +2833,37 @@
         "abstain",
         "unqualified",
         "unavailable"
+      ],
+      "type": "string"
+    },
+    "LatencyMs": {
+      "additionalProperties": false,
+      "properties": {
+        "mean": {
+          "format": "double",
+          "type": "number"
+        },
+        "p50": {
+          "format": "double",
+          "type": "number"
+        },
+        "p95": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mean",
+        "p50",
+        "p95"
+      ],
+      "type": "object"
+    },
+    "MemoryDecision": {
+      "enum": [
+        "approve",
+        "edit_and_approve",
+        "reject"
       ],
       "type": "string"
     },
@@ -2037,6 +3096,15 @@
       ],
       "type": "object"
     },
+    "RecoveryDecision": {
+      "enum": [
+        "accept_observed",
+        "resume_read_only",
+        "continue_from_checkpoint",
+        "abandon"
+      ],
+      "type": "string"
+    },
     "ResultManifest": {
       "additionalProperties": false,
       "properties": {
@@ -2145,6 +3213,20 @@
         "failed"
       ],
       "type": "string"
+    },
+    "ScopeRole": {
+      "oneOf": [
+        {
+          "const": "owner_operator",
+          "description": "The operator's own adapter: the only caller that may open a scope.",
+          "type": "string"
+        },
+        {
+          "const": "coding_worker",
+          "description": "A bounded coding worker: receives broker requests only, never the host\nsession bus or the operator's personal browser.",
+          "type": "string"
+        }
+      ]
     },
     "ScoreEvidence": {
       "oneOf": [
@@ -2340,10 +3422,99 @@
       ],
       "type": "object"
     },
+    "SourceInput": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "attachment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "receipt": {
+              "$ref": "#/$defs/Digest"
+            },
+            "type": {
+              "const": "fetched",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url",
+            "receipt"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "SpendPolicy": {
       "enum": [
         "free_only",
         "paid_allowed"
+      ],
+      "type": "string"
+    },
+    "SplitDigests": {
+      "additionalProperties": false,
+      "properties": {
+        "calibration": {
+          "$ref": "#/$defs/Digest"
+        },
+        "development": {
+          "$ref": "#/$defs/Digest"
+        },
+        "holdout": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "required": [
+        "development",
+        "calibration",
+        "holdout"
+      ],
+      "type": "object"
+    },
+    "TargetKind": {
+      "description": "A target kind the broker may scope authority over. `DocumentFile` is the\ncore-owned, byte-verified document model (the offline-qualifiable backend);\n`BrowserProfile` and `NativeWindow` are live backends that require the\npinned AlphaCode executor.",
+      "enum": [
+        "browser_profile",
+        "native_window",
+        "document_file"
       ],
       "type": "string"
     },
@@ -2447,6 +3618,29 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "WebGptTurnInput": {
+      "additionalProperties": false,
+      "description": "Input to a genuine WebGPT turn (W2). Image parts carry base64 inline data\n(`data:<mime>;base64,<data>`); every image is stored in the run's project\nCAS before the sidecar runs.",
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/ContentPart"
+          },
+          "type": "array"
+        },
+        "conversation_id": {
+          "description": "Native conversation to continue, when the sidecar reports one. A turn\nnever opens a fresh chat implicitly: continuation only follows a\nsidecar-confirmed conversation id, never a retry of a failed send.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "type": "object"
     },
     "WorkerEvent": {
       "additionalProperties": false,

@@ -58,7 +58,7 @@ export type CoreEvent = { "type": "turn_started", message_id: MessageId, } | { "
 export type WorkerEvent = { session_id?: string, turn_id: string, tool_id?: string, run_id: RunId, payload: CoreEvent, };
 export type EventEnvelope = { protocol: 1, seq: number, request_id?: string, project_id?: ProjectId, run_id?: RunId, timestamp: number, payload: CoreEvent, };
 export type Project = { id: ProjectId, name: string, root: string, created_at: number, };
-export type CoreCommand = { "type": "status", } | { "type": "events", after: number, } | { "type": "project_list", } | { "type": "project_create", name: string, root: string, } | { "type": "doctor", } | { "type": "shutdown", } | { "type": "artifact_read", project_id: ProjectId, artifact_id: ArtifactId, } | { "type": "import_preview", project_id: ProjectId, source: ImportSource, } | { "type": "import_apply", project_id: ProjectId, preview_digest: Digest, } | { "type": "backup_create", destination: string, } | { "type": "retention_sweep", } | { "type": "object_capacity", project_id: ProjectId, } | { "type": "conversation_create", project_id: ProjectId, } | { "type": "conversation_history", conversation_id: ConversationId, } | { "type": "conversation_rename", conversation_id: ConversationId, title: string, } | { "type": "conversation_search", project_id: ProjectId, query: string, include_archived: boolean, limit: number, } | { "type": "conversation_export", conversation_id: ConversationId, format: ExportFormat, } | { "type": "conversation_edit", message_id: MessageId, parts: Array<ContentPart>, } | { "type": "conversation_queue_turn", conversation_id: ConversationId, branch_id: BranchId, parts: Array<ContentPart>, pin: RoutePin, context?: ContextPackage, } | { "type": "conversation_regenerate", message_id: MessageId, pin: RoutePin, } | { "type": "conversation_archive", conversation_id: ConversationId, } | { "type": "conversation_delete", conversation_id: ConversationId, resolution: RunResolution, } | { "type": "run_interrupt", run_id: RunId, };
+export type CoreCommand = { "type": "status", } | { "type": "events", after: number, } | { "type": "project_list", } | { "type": "project_create", name: string, root: string, } | { "type": "doctor", } | { "type": "shutdown", } | { "type": "artifact_read", project_id: ProjectId, artifact_id: ArtifactId, } | { "type": "import_preview", project_id: ProjectId, source: ImportSource, } | { "type": "import_apply", project_id: ProjectId, preview_digest: Digest, } | { "type": "backup_create", destination: string, } | { "type": "retention_sweep", } | { "type": "object_capacity", project_id: ProjectId, } | { "type": "conversation_create", project_id: ProjectId, } | { "type": "conversation_history", conversation_id: ConversationId, } | { "type": "conversation_rename", conversation_id: ConversationId, title: string, } | { "type": "conversation_search", project_id: ProjectId, query: string, include_archived: boolean, limit: number, } | { "type": "conversation_export", conversation_id: ConversationId, format: ExportFormat, } | { "type": "conversation_edit", message_id: MessageId, parts: Array<ContentPart>, } | { "type": "conversation_queue_turn", conversation_id: ConversationId, branch_id: BranchId, parts: Array<ContentPart>, pin: RoutePin, context?: ContextPackage, } | { "type": "conversation_regenerate", message_id: MessageId, pin: RoutePin, } | { "type": "conversation_archive", conversation_id: ConversationId, } | { "type": "conversation_delete", conversation_id: ConversationId, resolution: RunResolution, } | { "type": "run_interrupt", run_id: RunId, } | { "type": "run_create", project_id: ProjectId, task: string, } | { "type": "run_start", project_id: ProjectId, run_id: RunId, pin: RoutePin, native_session: SessionRef | null, artifacts: Array<ArtifactId>, recorded_pid?: number, recorded_start_time?: number, } | { "type": "run_pause", project_id: ProjectId, run_id: RunId, } | { "type": "run_resume", project_id: ProjectId, run_id: RunId, } | { "type": "run_checkpoint", project_id: ProjectId, run_id: RunId, phase: CheckpointPhase, manifest: ResultManifest, } | { "type": "run_inspect", project_id: ProjectId, run_id: RunId, } | { "type": "run_reconcile", project_id: ProjectId, run_id: RunId, decision: RecoveryDecision, } | { "type": "run_cancel", project_id: ProjectId, run_id: RunId, } | { "type": "run_observe_stop", project_id: ProjectId, run_id: RunId, } | { "type": "run_native_done", project_id: ProjectId, run_id: RunId, receipt: string, } | { "type": "knowledge_ingest", project_id: ProjectId, source: SourceInput, disclosure: DisclosurePolicy, } | { "type": "knowledge_retrieve", project_id: ProjectId, query: string, limit: number, } | { "type": "knowledge_open_citation", project_id: ProjectId, citation: Citation, } | { "type": "knowledge_delete_source", project_id: ProjectId, source_id: string, } | { "type": "knowledge_build_context", project_id: ProjectId, query: string, limit: number, } | { "type": "memory_propose", project_id: ProjectId, text: string, source: string, } | { "type": "memory_decide", project_id: ProjectId, candidate_id: string, decision: MemoryDecision, edited_text?: string, } | { "type": "memory_forget", project_id: ProjectId, record_id: string, } | { "type": "knowledge_search_memory", project_id: ProjectId, query: string, limit: number, } | { "type": "knowledge_embed_index", project_id: ProjectId, model: EmbeddingModelIdentity, } | { "type": "knowledge_embed_query", project_id: ProjectId, model: EmbeddingModelIdentity, query: string, } | { "type": "web_gpt_probe", connection: ConnectionConfig, } | { "type": "web_gpt_activate", connection_id: string, } | { "type": "web_gpt_submit", run_id: RunId, content: Array<ContentPart>, idempotency_key: string, } | { "type": "web_gpt_resubmit", run_id: RunId, receipt_digest: Digest, } | { "type": "web_gpt_turn", run_id: RunId, input: WebGptTurnInput, } | { "type": "judgment_qualify", domain: JudgmentDomain, report: EvaluationReportInput, calibrator_digest: Digest, } | { "type": "judgment_qualification_list", domain: JudgmentDomain, } | { "type": "automation_observe", target: ApprovedTarget, } | { "type": "automation_execute", action: ActionSpec, grant: ApprovalGrant, expected_state_digest: Digest, } | { "type": "automation_release", scope_id: string, };
 export type CoreReply = { "type": "ok", value: unknown, } | { "type": "error", code: string, message: string, details: unknown, };
 export type ClientFrame = { "type": "hello", protocol: 1, session_nonce: string, } | { "type": "request", request_id: string, command: CoreCommand, } | { "type": "subscribe", after_seq: number, };
 export type ServerFrame = { "type": "hello", protocol: 1, } | { "type": "reply", request_id: string, reply: CoreReply, } | { "type": "event", event: EventEnvelope, } | { "type": "error", code: string, message: string, after_seq: number, };
@@ -87,8 +87,16 @@ export type RestoreReport = { database_digest: Digest, restored_objects: number,
 export type ArtifactRead = { digest: Digest, bytes: number, data: string, };
 export type CheckpointPhase = "planned" | "pre_mutation" | "post_mutation" | "post_verification" | "pre_consequential";
 export type CheckpointRecord = { run_id: RunId, phase: CheckpointPhase, state_digest: Digest, manifest: unknown, created_at: number, };
-export type RecoveryReport = { run_id: RunId, run_state: RunState, recorded_pid?: bigint, recorded_start_time?: bigint, checkpoint?: CheckpointRecord, observed_workspace: unknown, pending_mutation: boolean, uncertain_actions: Array<string>, recommended: Array<string>, };
+export type RecoveryReport = { run_id: RunId, run_state: RunState, recorded_pid?: number, recorded_start_time?: number, checkpoint?: CheckpointRecord, observed_workspace: unknown, pending_mutation: boolean, uncertain_actions: Array<string>, recommended: Array<string>, };
 export type RecoveryDecision = "accept_observed" | "resume_read_only" | "continue_from_checkpoint" | "abandon";
+export type RunReceipt = { run_id: RunId, node_id: NodeId, job_id: JobId, project_id: ProjectId, state: RunState, };
+export type JobGraph = { id: JobId, project_id: ProjectId, version: number, nodes: Array<JobNode>, };
+export type JobNode = { id: NodeId, role_id: string, dependencies: Array<NodeId>, route_pin?: RoutePin, allowed_routes: Array<string>, inputs: Array<string>, acceptance: Array<string>, workspace_mode: WorkspaceMode, };
+export type RoleDefinition = { id: string, instructions: string, required_capabilities: Array<Capability>, allowed_harnesses: Array<HarnessKind>, allowed_routes: Array<string>, source_scope: Array<string>, tool_scope: Array<string>, delegated_limits: DelegatedLimits, };
+export type DelegatedLimits = { max_workers: number, max_requests: number, max_cost_microusd?: number, };
+export type WorkspaceMode = "read_only" | "writer";
+export type TaskAuthority = { run_id: RunId, project_id: ProjectId, owner_approval_id: GrantId, scope: TaskScope, policy_version: bigint, expires_at: number, };
+export type TaskScope = { read_roots: Array<string>, write_roots: Array<string>, tools: Array<string>, connection_ids: Array<string>, network_destinations: Array<string>, };
 export type SourceInput = { "type": "file", path: string, } | { "type": "attachment", artifact_id: ArtifactId, } | { "type": "fetched", url: string, receipt: Digest, };
 export type DisclosurePolicy = { "type": "local_only" } | { "type": "allowed_connections", connection_ids: Array<string>, } | { "type": "explicit_public" };
 export type SourceRevision = { source_id: string, project_id: ProjectId, digest: Digest, mime: string, extractor_id: string, extractor_version: string, locators: number, created_at: number, };
@@ -103,7 +111,98 @@ export type EmbeddingIndexReceipt = { revision_id: string, model: EmbeddingModel
 export type JudgmentDomain = "task_intent" | "retrieval_relevance" | "handoff_completeness" | "evidence_needed" | "allowed_route_choice";
 export type QualificationState = "enabled" | "blocked";
 export type QualificationRecord = { domain: JudgmentDomain, model_identity: string, prompt_digest: Digest, state: QualificationState, upper_error_bound: number, acceptance_coverage: number, holdout_size: number, evaluated_at: number, calibrator_digest: Digest, };
-export type AdvisoryOutcome = { "type": "qualified_choice", choice: string, decision_id: DecisionId, } | { "type": "needs_planner", reason: string, } | { "type": "unavailable" };
+export type AdvisoryOutcome = { "type": "qualified_choice", choice: string, decision_id: DecisionId, } | { "type": "needs_planner", reason: string, decision_id?: DecisionId, } | { "type": "unavailable" };
+export type EvaluationReportInput = { domain: JudgmentDomain, domain_version: string, dataset_digest: Digest, prompt_digest: Digest, split_digests: SplitDigests, observed_identity_digest: Digest, observed_model_identity: string, claimed_identity: Digest, confidence_method: string, holdout: HoldoutMetrics, latency_ms: LatencyMs, evaluated_at?: bigint, };
+export type ClassMetrics = { total: number, accepted: number, wrong: number, abstained: number, invalid: number, unavailable: number, unqualified: number, };
+export type SplitDigests = { development: Digest, calibration: Digest, holdout: Digest, };
+export type LatencyMs = { mean: number, p50: number, p95: number, };
+export type GateVerdict = { state: QualificationState, reasons: Array<string>, };
+export type HoldoutMetrics = { size: number, accepted: number, wrong_accepted: number, abstained: number, invalid: number, unavailable: number, unqualified: number, coverage: number, upper_error_bound: number, by_class: { [key in string]?: ClassMetrics }, };
+export type ActionOutcome = "succeeded" | "failed" | "uncertain";
+export type WebGptStatus = { state: WebGptActivationState, sidecar_version?: string, profile_digest?: Digest, reason?: string, };
+export type WebGptSubmissionReceipt = { digest: Digest, run_id: RunId, idempotency_key: string, state: WebGptSubmissionState, 
+/**
+ * SHA-256 of the canonical content; a same-key/different-content submit is
+ * a conflict, never a silent overwrite.
+ */
+submission_digest: Digest, 
+/**
+ * The native message id exactly as the sidecar wrote it. Absent when the
+ * send could not be confirmed.
+ */
+native_message_id?: string, 
+/**
+ * The pinned sidecar version that produced this receipt.
+ */
+sidecar_version?: string, 
+/**
+ * The profile digest at send time, binding the receipt to the exact
+ * activation the turn ran under.
+ */
+profile_digest?: Digest, 
+/**
+ * Image parts the sidecar received, as CAS objects owned by the run's
+ * project; each digest is the image bytes' content digest.
+ */
+image_digests?: Array<Digest>, 
+/**
+ * The prompt text (all text parts, in order), kept for the audit trail.
+ */
+prompt_text: string, timestamp: number, 
+/**
+ * Set on a superseded view: the digest of the resubmit receipt.
+ */
+superseded_by?: Digest, 
+/**
+ * Set on a duplicate view: the digest of the original send's receipt.
+ */
+original?: Digest, 
+/**
+ * Human-readable cause for non-submitted states (never a secret).
+ */
+reason?: string, };
+export type WebGptTurnInput = { content: Array<ContentPart>, 
+/**
+ * Native conversation to continue, when the sidecar reports one. A turn
+ * never opens a fresh chat implicitly: continuation only follows a
+ * sidecar-confirmed conversation id, never a retry of a failed send.
+ */
+conversation_id?: string, };
+export type WebGptTurnOutput = { run_id: RunId, 
+/**
+ * The native message id exactly as the sidecar wrote it (its
+ * confirmation file — not core-generated).
+ */
+native_message_id: string, 
+/**
+ * Native conversation identifier as reported by the sidecar.
+ */
+conversation_id: string, 
+/**
+ * The native model label as reported by the sidecar; the core never
+ * substitutes its own identity.
+ */
+model: string, 
+/**
+ * The native reply text exactly as the sidecar returned it.
+ */
+response_text: string, sidecar_version: string, profile_digest: Digest, timestamp: number, };
+export type WebGptActivationState = "not_installed" | "not_activated" | "activated" | "unavailable";
+export type WebGptSubmissionState = "submitted" | "failed" | "duplicate" | "superseded";
+export type ApprovedTarget = { scope_id: string, role: ScopeRole, kind: TargetKind, target_id: string, expires_at: bigint, };
+export type AutomationObservation = { target_id: string, scope_id: string, backend: string, revision_digest: Digest, accessibility_tree?: unknown, image_artifact: ArtifactId | null, };
+export type AutomationReceipt = { action_id: ActionId, grant_id: GrantId | null, target_id: string, backend: string, operation: string, outcome: ActionOutcome, effect: Effect, revision_before: Digest, revision_after: Digest, receipt_digest: Digest, error: string | null, };
+export type Effect = "unchanged" | { "bytes_appended": { count: number, } } | { "executed": { description: string, } } | { "failed": { reason: string, } };
+export type TargetKind = "browser_profile" | "native_window" | "document_file";
+export type ScopeRole = "owner_operator" | "coding_worker";
+export type ScopePhase = "active" | "released";
+export type ConsentKind = "screenshot" | "get_cookies" | "set_cookies" | "clipboard_read" | "clipboard_write" | "file_upload";
+export type ConsentSource = "owner" | "page_world";
+export type ConsentRecord = { source: ConsentSource, kind: ConsentKind, scope_id: string, 
+/**
+ * SHA-256 of the disclosed subject (target identity / URL / file path).
+ */
+digest: Digest, };
 
 export interface HarnessAdapter {
   describe(): Promise<HarnessDescriptor>;

@@ -1,3 +1,4 @@
+import "./ironbark.css";
 // Ironbark Assistant desktop entry. Wires the typed CoreClient to the
 // projection and the navigation rail, and keeps a durable event subscription
 // alive. The webview is read-only: it displays state, it never mutates it.
@@ -24,7 +25,7 @@ let root: HTMLElement;
 
 function refresh(): void {
   const nav = document.getElementById("nav") as HTMLElement;
-  renderNavigation(nav, view, proj);
+  renderNavigation(nav, view);
   render(proj, root);
 }
 
@@ -32,6 +33,8 @@ function setView(name: ViewName): void {
   view = name;
   refresh();
 }
+
+setNavigateHandler(setView);
 
 async function loadInitial(): Promise<void> {
   const title = (text: string): void => { document.title = `Ironbark — ${text}`; };

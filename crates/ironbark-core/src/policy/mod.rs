@@ -5,9 +5,11 @@ pub mod service;
 pub mod file_sink;
 
 use crate::contracts::{ActionSpec, ApprovalGrant, GrantId, ProjectId, ProjectPolicy, RunId};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct TaskScope {
     pub read_roots: Vec<String>,
@@ -17,7 +19,7 @@ pub struct TaskScope {
     pub network_destinations: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAuthority {
     pub run_id: RunId,
@@ -25,7 +27,7 @@ pub struct TaskAuthority {
     pub owner_approval_id: GrantId,
     pub scope: TaskScope,
     pub policy_version: u64,
-    pub expires_at: i64,
+    #[ts(type = "number")] pub expires_at: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

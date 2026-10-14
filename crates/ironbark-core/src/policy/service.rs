@@ -2,6 +2,8 @@ use crate::{contracts::*, error::{CoreError, Result}, store::{Store, events::red
 use super::{PolicyDecision, PolicyEngine};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
+use ts_rs::TS;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
@@ -11,7 +13,7 @@ pub enum ApprovalDecision {
     Revoke {},
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionOutcome { Succeeded, Failed, Uncertain }
 

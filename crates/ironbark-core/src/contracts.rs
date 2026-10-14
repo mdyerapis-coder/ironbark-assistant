@@ -1,10 +1,13 @@
+use crate::judgments::EvaluationReportInput;
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 use ts_rs::TS;
 use uuid::Uuid;
 use crate::error::{CoreError, Result};
 use crate::conversations::{ExportFormat, RunResolution};
+use crate::automation::targets::ApprovedTarget;
 use crate::store::imports::ImportSource;
+use crate::connections::webgpt::WebGptTurnInput;
 
 macro_rules! uuid_id {
     ($($name:ident),* $(,)?) => { $(
@@ -205,7 +208,7 @@ pub enum CheckpointPhase { Planned, PreMutation, PostMutation, PostVerification,
 pub struct CheckpointRecord { pub run_id: RunId, pub phase: CheckpointPhase, pub state_digest: Digest, #[ts(type = "unknown")] pub manifest: serde_json::Value, #[ts(type = "number")] pub created_at: i64 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
-pub struct RecoveryReport { pub run_id: RunId, pub run_state: RunState, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub recorded_pid: Option<u64>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub recorded_start_time: Option<i64>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub checkpoint: Option<CheckpointRecord>, #[ts(type = "unknown")] pub observed_workspace: serde_json::Value, pub pending_mutation: bool, pub uncertain_actions: Vec<String>, pub recommended: Vec<String> }
+pub struct RecoveryReport { pub run_id: RunId, pub run_state: RunState, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional, type = "number")] pub recorded_pid: Option<u64>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional, type = "number")] pub recorded_start_time: Option<i64>, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub checkpoint: Option<CheckpointRecord>, #[ts(type = "unknown")] pub observed_workspace: serde_json::Value, pub pending_mutation: bool, pub uncertain_actions: Vec<String>, pub recommended: Vec<String> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryDecision { AcceptObserved, ResumeReadOnly, ContinueFromCheckpoint, Abandon }
@@ -249,6 +252,65 @@ pub struct EmbeddingModelIdentity { pub connection_id: String, pub model_id: Str
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingIndexReceipt { pub revision_id: String, pub model: EmbeddingModelIdentity, pub chunks_indexed: usize, #[ts(type = "number")] pub indexed_at: i64 }
 
+// ── H6: roles, scoped tools and deterministic graph orchestration ────────────────
+
+/// Which workspace a node needs: a reviewer/verifier reads, the implementer writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMode { ReadOnly, Writer }
+
+/// The hard ceilings a role may delegate to the work it starts. A role definition
+/// is not itself an approval: these limits only bound what the role may propose.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DelegatedLimits {
+    pub max_workers: u16,
+    pub max_requests: u32,
+    #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional, type = "number")] pub max_cost_microusd: Option<u64>,
+}
+
+/// A scoped role: instructions plus the routes, harnesses, sources and tools it
+/// is allowed to touch. Activation requires an import/activation preview, and
+/// activation never grants authority — it only scopes what the role may do
+/// inside the existing task policy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoleDefinition {
+    pub id: String,
+    pub instructions: String,
+    pub required_capabilities: Vec<Capability>,
+    pub allowed_harnesses: Vec<HarnessKind>,
+    pub allowed_routes: Vec<String>,
+    pub source_scope: Vec<String>,
+    pub tool_scope: Vec<String>,
+    pub delegated_limits: DelegatedLimits,
+}
+
+/// One node of the deterministic DAG. `dependencies` are node ids that must
+/// reach `Succeeded` before this node may start; `acceptance` names the checks
+/// the node's result must satisfy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct JobNode {
+    pub id: NodeId,
+    pub role_id: String,
+    pub dependencies: Vec<NodeId>,
+    #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] pub route_pin: Option<RoutePin>,
+    pub allowed_routes: Vec<String>,
+    pub inputs: Vec<String>,
+    pub acceptance: Vec<String>,
+    pub workspace_mode: WorkspaceMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct JobGraph {
+    pub id: JobId,
+    pub project_id: ProjectId,
+    #[ts(type = "number")] pub version: u64,
+    pub nodes: Vec<JobNode>,
+}
+
 // ── J2/J3: domain qualification and advisory judgments ────────────────────────────
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
@@ -261,7 +323,12 @@ pub enum QualificationState { Enabled, Blocked }
 pub struct QualificationRecord { pub domain: JudgmentDomain, pub model_identity: String, pub prompt_digest: Digest, pub state: QualificationState, pub upper_error_bound: f64, pub acceptance_coverage: f64, #[ts(type = "number")] pub holdout_size: u32, #[ts(type = "number")] pub evaluated_at: i64, pub calibrator_digest: Digest }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AdvisoryOutcome { QualifiedChoice { choice: String, decision_id: DecisionId }, NeedsPlanner { reason: String }, Unavailable }
+pub enum AdvisoryOutcome { QualifiedChoice { choice: String, decision_id: DecisionId },
+    /// The advisor could not choose. `decision_id` names the recorded judgment
+    /// that was consulted, when one exists, so the planner can inspect it.
+    NeedsPlanner { reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] decision_id: Option<DecisionId> },
+    Unavailable }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -316,7 +383,42 @@ pub enum CoreCommand { Status {}, Events { #[ts(type = "number")] after: u64 }, 
     ConversationRegenerate { message_id: MessageId, pin: RoutePin },
     ConversationArchive { conversation_id: ConversationId },
     ConversationDelete { conversation_id: ConversationId, resolution: RunResolution },
-    RunInterrupt { run_id: RunId } }
+    RunInterrupt { run_id: RunId },
+    RunCreate { project_id: ProjectId, task: String },
+    RunStart { project_id: ProjectId, run_id: RunId, pin: RoutePin,
+        #[serde(default)] native_session: Option<SessionRef>,
+        #[serde(default)] artifacts: Vec<ArtifactId>,
+        #[serde(default)] #[ts(optional, type = "number")] recorded_pid: Option<u64>,
+        #[serde(default)] #[ts(optional, type = "number")] recorded_start_time: Option<i64> },
+    RunPause { project_id: ProjectId, run_id: RunId },
+    RunResume { project_id: ProjectId, run_id: RunId },
+    RunCheckpoint { project_id: ProjectId, run_id: RunId, phase: CheckpointPhase, manifest: ResultManifest },
+    RunInspect { project_id: ProjectId, run_id: RunId },
+    RunReconcile { project_id: ProjectId, run_id: RunId, decision: RecoveryDecision },
+    RunCancel { project_id: ProjectId, run_id: RunId },
+    RunObserveStop { project_id: ProjectId, run_id: RunId },
+    RunNativeDone { project_id: ProjectId, run_id: RunId, receipt: String },
+    KnowledgeIngest { project_id: ProjectId, source: SourceInput, disclosure: DisclosurePolicy },
+    KnowledgeRetrieve { project_id: ProjectId, query: String, #[ts(type = "number")] limit: u32 },
+    KnowledgeOpenCitation { project_id: ProjectId, citation: Citation },
+    KnowledgeDeleteSource { project_id: ProjectId, source_id: String },
+    KnowledgeBuildContext { project_id: ProjectId, query: String, #[ts(type = "number")] limit: u32 },
+    MemoryPropose { project_id: ProjectId, text: String, source: String },
+    MemoryDecide { project_id: ProjectId, candidate_id: String, decision: MemoryDecision, #[serde(skip_serializing_if = "Option::is_none")] #[ts(optional)] edited_text: Option<String> },
+    MemoryForget { project_id: ProjectId, record_id: String },
+    KnowledgeSearchMemory { project_id: ProjectId, query: String, #[ts(type = "number")] limit: u32 },
+    KnowledgeEmbedIndex { project_id: ProjectId, model: EmbeddingModelIdentity },
+    KnowledgeEmbedQuery { project_id: ProjectId, model: EmbeddingModelIdentity, query: String },
+    WebGptProbe { connection: ConnectionConfig },
+    WebGptActivate { connection_id: String },
+    WebGptSubmit { run_id: RunId, content: Vec<ContentPart>, idempotency_key: String },
+    WebGptResubmit { run_id: RunId, receipt_digest: Digest },
+    WebGptTurn { run_id: RunId, input: WebGptTurnInput },
+    JudgmentQualify { domain: JudgmentDomain, report: EvaluationReportInput, calibrator_digest: Digest },
+    JudgmentQualificationList { domain: JudgmentDomain },
+    AutomationObserve { target: ApprovedTarget },
+    AutomationExecute { action: ActionSpec, grant: ApprovalGrant, expected_state_digest: Digest },
+    AutomationRelease { scope_id: String } }
 
 /// Authenticated read of a CAS object over the control socket. The object bytes are
 /// base64-encoded in the JSON reply so raw, digest-verified bytes can cross the

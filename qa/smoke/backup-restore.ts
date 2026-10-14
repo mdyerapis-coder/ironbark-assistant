@@ -4,7 +4,7 @@ import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Subprocess } from "bun";
-import type { BackupManifest, ImportPreview, ImportReceipt, RestoreReport } from "../../packages/contracts/src/generated";
+import type { BackupManifest, ImportPreview, ImportReceipt, RecoveryReport, RestoreReport, RunReceipt } from "../../packages/contracts/src/generated";
 
 // Exercises actual future canonical CLI operations. Unsupported commands fail;
 // this script never synthesizes a database, a receipt, or a successful response.
@@ -90,11 +90,11 @@ try {
   assert(imported.artifact_id && imported.source_id);
   assert.deepEqual(await command(originalEnv, ["artifact", "read", "--project", project.id, "--id", imported.artifact_id]), sourceBytes);
   // This is a real queued scheduler run, not a fake native completion fixture.
-  const run = await json<{ id: string }>(originalEnv, ["run", "create", "--project", project.id, "--workspace", temp]);
+  const run = await json<RunReceipt>(originalEnv, ["run", "create", "--project", project.id, "--task", "queued backup smoke work", "--workspace", temp]);
   const checkpointFile = join(temp, "checkpoint-manifest.json");
-  await writeFile(checkpointFile, JSON.stringify({ run_id: run.id, artifacts: [imported.artifact_id], checks: [], acceptance_satisfied: false, unresolved: ["queued work; not executed"] }));
-  const checkpoint = await json<{ artifact_id: string }>(originalEnv, ["checkpoint", "capture", "--run", run.id, "--phase", "planned", "--manifest", checkpointFile]);
-  const checkpointBytes = await command(originalEnv, ["artifact", "read", "--project", project.id, "--id", checkpoint.artifact_id]);
+  await writeFile(checkpointFile, JSON.stringify({ run_id: run.run_id, artifacts: [imported.artifact_id], checks: [], acceptance_satisfied: false, unresolved: ["queued work; not executed"] }));
+  const checkpointArtifact = await json<string>(originalEnv, ["checkpoint", "capture", "--project", project.id, "--run", run.run_id, "--phase", "planned", "--manifest", checkpointFile]);
+  const checkpointBytes = await command(originalEnv, ["artifact", "read", "--project", project.id, "--id", checkpointArtifact]);
   // Unique runtime/vault sentinel is actual file material that must not export.
   await writeFile(join(runtime(originalEnv), "private-lease-sentinel"), secret, { mode: 0o600 });
   const native = join(temp, "native-harness"); await mkdir(native, { mode: 0o700 }); await writeFile(join(native, "credentials"), secret, { mode: 0o600 });
@@ -113,10 +113,11 @@ try {
   assert(!(await exists(runtime(restoredEnv)))); assert(!(await exists(join(restoredEnv.XDG_STATE_HOME, "ironbark-assistant"))));
   restoredDaemon = await start(restoredEnv);
   assert.deepEqual(await command(restoredEnv, ["artifact", "read", "--project", project.id, "--id", imported.artifact_id]), sourceBytes);
-  assert.deepEqual(await command(restoredEnv, ["artifact", "read", "--project", project.id, "--id", checkpoint.artifact_id]), checkpointBytes);
-  const restoredRun = await json<{ state: string }>(restoredEnv, ["run", "inspect", "--run", run.id]); assert.equal(restoredRun.state, "blocked");
-  const processStatus = await json<{ active_workers: number }>(restoredEnv, ["status"]);
-  assert.equal(processStatus.active_workers, 0, "actual process manager reports a restored worker");
+  assert.deepEqual(await command(restoredEnv, ["artifact", "read", "--project", project.id, "--id", checkpointArtifact]), checkpointBytes);
+  const restoredRun = await json<RecoveryReport>(restoredEnv, ["run", "inspect", "--project", project.id, "--run", run.run_id]); assert.equal(restoredRun.run_state, "blocked");
+  const processStatus = await json<{ protocol: number; projects: number }>(restoredEnv, ["status"]);
+  assert.equal(processStatus.protocol, 1, "restored core is not the canonical protocol");
+  assert.equal(processStatus.projects, 1, "restored namespace lost its restored project");
   await assertNoChildren(restoredDaemon.pid);
   assert.equal((await readFile(join(native, "credentials"), "utf8")), secret);
   const doctor = await json<{ sqlite_integrity: string; foreign_keys: boolean }>(restoredEnv, ["doctor", "--json"]); assert.equal(doctor.sqlite_integrity, "ok"); assert.equal(doctor.foreign_keys, true);

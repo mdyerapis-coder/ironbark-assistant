@@ -14,8 +14,10 @@
 #                                 the containment code requires it there
 #
 # Desktop integration: an honest headless application entry (the core daemon is
-# the installed surface; there is no GUI yet). The emblem icon is original art,
-# not derived from the imagery pack (artwork rights disposition pending).
+# the installed surface). ironbark-desktop is installed but carries no launcher
+# until the desktop surface is qualified (plan D2-D5). The emblem icon is
+# original art, not derived from the imagery pack (artwork rights disposition
+# pending).
 
 pkgname=ironbark-assistant
 pkgver=0.1.0
@@ -25,7 +27,9 @@ arch=(x86_64)
 url="https://github.com/mdyerapis-coder/ironbark-assistant"
 license=(MIT)
 depends=(glibc bubblewrap)
-makedepends=(rust desktop-file-utils gtk-update-icon-cache)
+# The desktop client is a Tauri application, so the WebKitGTK/JSC development
+# packages are required to build it; without them the package build fails.
+makedepends=(rust desktop-file-utils gtk-update-icon-cache webkit2gtk-4.1 javascriptcoregtk-4.1 librsvg libappindicator-gtk3 openssl)
 optdepends=(
     "bun: provider/JEV adapter worker runtime"
 )
@@ -45,14 +49,14 @@ build() {
     # flags for the build so the bundled C compiles to plain objects.
     CFLAGS=$(printf '%s' "${CFLAGS:-}" | sed -E 's/(^|[[:space:]])-flto(=[A-Za-z0-9_-]+)?//g')
     CXXFLAGS=$(printf '%s' "${CXXFLAGS:-}" | sed -E 's/(^|[[:space:]])-flto(=[A-Za-z0-9_-]+)?//g')
-    cargo build --release -p ironbark-core -p ironbark-cli
+    cargo build --release -p ironbark-core -p ironbark-cli -p ironbark-desktop
 }
 
 package() {
     cd "${srcdir}/ironbark-assistant-${pkgver}"
     install -Dm755 target/release/ironbark-core   -t "${pkgdir}/usr/bin"
     install -Dm755 target/release/ironbark-cli    -t "${pkgdir}/usr/bin"
-    # The containment code binds this at the EXACT /opt/ironbark/namespace-bridge
+    install -Dm755 target/release/ironbark-desktop -t "${pkgdir}/usr/bin"
     # path inside worker namespaces, so the installed name carries the hyphen.
     install -Dm755 target/release/namespace_bridge "${pkgdir}/opt/ironbark/namespace-bridge"
     install -Dm644 LICENSE  -t "${pkgdir}/usr/share/licenses/${pkgname}"

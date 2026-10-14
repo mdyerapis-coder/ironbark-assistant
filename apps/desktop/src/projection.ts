@@ -23,6 +23,11 @@ export interface Projection {
   projectsError?: string;
   events: EventItem[];
   lastSeq: number;
+  conversation?: {
+    id: string;
+    project_id: string;
+    messages: Array<{ id: string; role: string; parts: Array<{ text?: string }> }>;
+  };
 }
 
 export function initialProjection(): Projection {
@@ -72,7 +77,12 @@ export function coreState(proj: Projection, state: "connecting" | "live" | "erro
   return { ...proj, core: state };
 }
 
-export function render(proj: Projection, root: HTMLElement): void {
+export function render(proj: Projection, root: HTMLElement, view: string): void {
+  if (view === "conversation") {
+    renderConversation(proj, root);
+    return;
+  }
+
   const rows: Array<[string, string]> = [];
   rows.push(["core", proj.core]);
   if (proj.status) {
@@ -99,6 +109,25 @@ export function render(proj: Projection, root: HTMLElement): void {
     h("div", { class: "pane events" },
       h("h2", {}, `Events (${proj.events.length})`),
       h("ol", {}, ...proj.events.slice().reverse().map((e) => h("li", {}, `#${e.seq} ${e.label}`))),
+    ),
+  );
+}
+
+function renderConversation(proj: Projection, root: HTMLElement): void {
+  const messages = proj.conversation?.messages ?? [];
+  root.replaceChildren(
+    h("div", { class: "pane conversation" },
+      h("h2", {}, "Conversations"),
+      h("div", { class: "messages" }, ...messages.map((m) =>
+        h("div", { class: `message ${m.role}` },
+          h("div", { class: "role" }, m.role),
+          h("div", { class: "content" }, m.parts.map((p) => p.text ?? "").join("")),
+        ),
+      )),
+      h("div", { class: "input-row" },
+        h("input", { class: "chat-input", type: "text", placeholder: "Type a message..." }),
+        h("button", { class: "primary", type: "button", onclick: "window.dispatchEvent(new CustomEvent('send-message'))" }, "Send"),
+      ),
     ),
   );
 }

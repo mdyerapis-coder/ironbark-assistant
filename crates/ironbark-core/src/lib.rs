@@ -11,6 +11,7 @@ pub mod policy;
 pub mod process;
 pub mod roles;
 pub mod tools;
+pub mod connections;
 pub mod automation;
 pub mod execution;
 pub mod store;

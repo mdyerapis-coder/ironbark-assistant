@@ -29,6 +29,8 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "icon": ["icons/icon-512.png"],
+    "targets": ["rpm", "appimage"]
   }
 }
