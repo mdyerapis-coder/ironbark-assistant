@@ -10,18 +10,45 @@
 //! row are committed in ONE transaction. An extraction failure (encrypted,
 //! malformed, unavailable extractor, empty) returns before that transaction and
 //! therefore publishes NO partial revision.
+//!
+//! A revision's digest is a retention root (`store::retention::referenced_digests`),
+//! so the bytes it names must be a resolvable content-addressed object for EVERY
+//! input kind. Ingestion therefore publishes the resolved bytes into the project
+//! CAS BEFORE the revision row is committed: a failed publish leaves no revision
+//! referencing a missing object, and a missing object would make every backup
+//! fail closed with `IntegrityMismatch`.
 
-use std::io::Read as _;
+use std::io::{Cursor, Read as _};
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest as ShaDigest, Sha256};
 use uuid::Uuid;
 use crate::contracts::{Digest, DisclosurePolicy, ProjectId, SourceInput, SourceRevision};
 use crate::error::{CoreError, Result};
+use crate::store::objects::{ObjectLimits, ObjectStore};
 use super::chunks;
 use super::extractors;
-use super::{ensure_project_tx, latest_policy, now_ms, KnowledgeService};
+use super::{ensure_project, ensure_project_tx, latest_policy, now_ms, KnowledgeService};
 
 impl KnowledgeService {
+    /// The project-scoped content-addressed store rooted at the project CAS.
+    fn object_store(&self, project: ProjectId) -> Result<ObjectStore> {
+        ObjectStore::new(self.store.clone(), project, self.cas_root.clone(), ObjectLimits::default())
+    }
+
+    /// Publish the resolved source bytes into the project CAS. Every input kind
+    /// (`File`, `Attachment`, `Fetched`) must leave the revision's digest behind
+    /// as a content-addressed object, because that digest is a retention root.
+    /// Publishing bytes the store already holds verifies the existing object
+    /// instead of replacing it, so re-publishing identical bytes is idempotent.
+    async fn publish_source_bytes(&self, project: ProjectId, bytes: Vec<u8>) -> Result<()> {
+        // Publishing is a durable write for the named project: refuse an
+        // unregistered project here — with the same typed error the revision
+        // transaction raises — before staging any bytes.
+        self.store.with_connection(move |conn| ensure_project(conn, project)).await?;
+        self.object_store(project)?.put(Cursor::new(bytes), extractors::MAX_SOURCE_BYTES).await?;
+        Ok(())
+    }
+
     /// Resolve the source bytes + canonical identity for the input kind.
     /// `File` reads a local path; `Attachment` reads a project CAS artifact;
     /// `Fetched` performs a policy-authorized anonymous GET.
@@ -43,11 +70,7 @@ impl KnowledgeService {
                 Ok((bytes, path.clone()))
             }
             SourceInput::Attachment { artifact_id } => {
-                let objects = crate::store::objects::ObjectStore::new(
-                    self.store.clone(), project, self.cas_root.clone(),
-                    crate::store::objects::ObjectLimits::default(),
-                )?;
-                let mut reader = objects.get(*artifact_id).await?;
+                let mut reader = self.object_store(project)?.get(*artifact_id).await?;
                 if reader.bytes > extractors::MAX_SOURCE_BYTES {
                     return Err(CoreError::new("source_too_large", "attachment exceeds the ingestion size limit"));
                 }
@@ -93,12 +116,20 @@ impl KnowledgeService {
         let name = filename_for(&uri);
         let digest = sha256_hex(&bytes);
         let digest_parsed = Digest::parse(&digest)?;
-        // Extract + validate BEFORE any durable write.
-        let extraction = tokio::task::spawn_blocking(move || extractors::extract(&name, &bytes))
-            .await
-            .map_err(|_| CoreError::new("extraction_worker_failed", "extraction worker panicked"))?
-            .map_err(|e| e)?;
+        // Extract + validate BEFORE any durable write. The worker hands the bytes
+        // back so the publish below reuses the exact resolved buffer.
+        let (extraction, bytes) = tokio::task::spawn_blocking(move || {
+            Ok::<_, CoreError>((extractors::extract(&name, &bytes)?, bytes))
+        })
+        .await
+        .map_err(|_| CoreError::new("extraction_worker_failed", "extraction worker panicked"))??;
         extractors::validate(&extraction)?;
+        // The revision's digest must name a resolvable CAS object, so publish the
+        // resolved bytes before committing the revision row. Ordering matters
+        // both ways: a refused source never leaves an orphan object (extraction
+        // ran first), and a failed publish never leaves a revision that
+        // references a missing object.
+        self.publish_source_bytes(project, bytes).await?;
 
         let store = self.store.clone();
         let project_str = project.to_string();

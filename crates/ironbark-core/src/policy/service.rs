@@ -176,3 +176,71 @@ impl ApprovalService {
         }).await
     }
 }
+
+/// The single product writer for the `policies` table. Every retrieval, context
+/// and embedding-ranking path reads the latest committed policy through
+/// `require_policy`/`latest_policy`; before this service existed nothing in the
+/// product could ever commit one.
+#[derive(Clone)]
+pub struct PolicyService { store: Store }
+
+impl PolicyService {
+    pub fn new(store: Store) -> Self { Self { store } }
+
+    /// Commit `policy` as a NEW version for `project`. All authority and shape
+    /// checks run before the write; the row and its event commit in one
+    /// transaction, so a refused policy leaves no `policies` row and no event.
+    pub async fn set(&self, project: ProjectId, policy: ProjectPolicy) -> Result<ProjectPolicy> {
+        if policy.project_id != project {
+            return Err(CoreError::new("project_mismatch", "policy.project_id does not match the target project"));
+        }
+        if policy.version < 1 {
+            return Err(CoreError::new("invalid_policy_version", "policy version must be at least 1"));
+        }
+        if !(1..=32).contains(&policy.max_workers) {
+            return Err(CoreError::new("invalid_policy_bounds", "max_workers must be between 1 and 32"));
+        }
+        if !(1..=100_000).contains(&policy.max_requests) {
+            return Err(CoreError::new("invalid_policy_bounds", "max_requests must be between 1 and 100000"));
+        }
+        // The same round-trip the action path uses: redaction must not change the
+        // value, so credential material is refused rather than silently stored.
+        let body = redacted_json(&policy)?;
+        if serde_json::from_str::<ProjectPolicy>(&body)? != policy {
+            return Err(CoreError::new("sensitive_policy", "policy carries credential material; use a native secret reference"));
+        }
+        let version = i64::try_from(policy.version)
+            .map_err(|_| CoreError::new("invalid_policy_version", "policy version exceeds storage range"))?;
+        let committed = policy.clone();
+        self.store.with_transaction(move |tx| {
+            let registered: Option<String> = tx.query_row("SELECT name FROM projects WHERE id=?1", [project.to_string()], |row| row.get(0)).optional()?;
+            if registered.is_none() {
+                return Err(CoreError::new("project_missing", "policy names a project that is not registered"));
+            }
+            let latest: Option<i64> = tx.query_row(
+                "SELECT version FROM policies WHERE project_id=?1 ORDER BY version DESC LIMIT 1",
+                [project.to_string()], |row| row.get(0),
+            ).optional()?;
+            if latest.is_some_and(|current| version <= current) {
+                return Err(CoreError::new("stale_policy_version", "policy version must be greater than the latest committed version"));
+            }
+            tx.execute("INSERT INTO policies(project_id,version,body) VALUES(?1,?2,?3)", params![project.to_string(),version,body])?;
+            crate::store::events::append_tx(tx, None, Some(project), None, &CoreEvent::StateChanged {
+                entity_id: project.to_string(), state: format!("policy_committed:{version}"),
+            })?;
+            Ok(())
+        }).await?;
+        Ok(committed)
+    }
+
+    /// The latest committed policy for a project, or the typed `policy_missing`.
+    pub async fn latest(&self, project: ProjectId) -> Result<ProjectPolicy> {
+        self.store.with_connection(move |conn| {
+            let body: Option<String> = conn.query_row(
+                "SELECT body FROM policies WHERE project_id=?1 ORDER BY version DESC LIMIT 1",
+                [project.to_string()], |row| row.get(0),
+            ).optional()?;
+            serde_json::from_str(&body.ok_or_else(|| CoreError::new("policy_missing", "project has no committed policy"))?).map_err(Into::into)
+        }).await
+    }
+}

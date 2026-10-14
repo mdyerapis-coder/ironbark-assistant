@@ -61,17 +61,41 @@ fn integrity(conn:&Connection)->Result<()> {
     let mut stmt=conn.prepare("PRAGMA foreign_key_check")?;if stmt.query([])?.next()?.is_some() {return Err(CoreError::new("IntegrityMismatch","SQLite foreign keys are invalid"));}Ok(())
 }
 
+/// The knowledge FTS5 mirror table (owned by `crate::knowledge::chunks`).
+const FTS_MIRROR:&str=crate::knowledge::chunks::FTS_TABLE;
+/// The mirror plus the shadow tables FTS5 creates for it. All are derived from
+/// `chunks` and are reconciled through the virtual table, never scanned/redacted
+/// directly (their blob columns are FTS5's own segment index, not user data).
+const DERIVED_FTS:&[&str]=&[FTS_MIRROR,"knowledge_fts_data","knowledge_fts_idx","knowledge_fts_content","knowledge_fts_docsize","knowledge_fts_config"];
+
 /// Fail closed for new tables until their data/export ownership is reviewed.
 /// SQLite free pages are rebuilt after redaction: UPDATE alone leaks old secrets.
 fn sanitize(conn:&mut Connection)->Result<()> {
     integrity(conn)?;
-    const ALLOWED:&[&str]=&["projects","policies","provider_references","provider_observations","conversations","branches","messages","branch_messages","attachments","jobs","nodes","runs","conversation_turns","actions","grants","action_outcomes","requests","events","artifacts","checkpoints","sources","source_revisions","chunks","embeddings","memory","judgments","import_previews","import_receipts"];
+    // The FTS5 knowledge mirror (and the shadow tables FTS5 creates for it) is
+    // derived content: `crate::knowledge::chunks::ensure_fts` owns it, no
+    // migration creates it, and it indexes the text already held by `chunks`.
+    // It is exported (not dropped) because the mirror is also the only place a
+    // source's disclosure policy is persisted, so a restored store could not
+    // re-derive its filtering from the base tables. Atomicity is inherent: the
+    // mirror rides the same single-file online snapshot as `chunks`.
+    const ALLOWED:&[&str]=&["projects","policies","provider_references","provider_observations","conversations","branches","messages","branch_messages","attachments","jobs","nodes","runs","conversation_turns","actions","grants","action_outcomes","requests","events","artifacts","checkpoints","sources","source_revisions","chunks","embeddings","memory","judgments","import_previews","import_receipts",crate::knowledge::chunks::FTS_TABLE,"knowledge_fts_data","knowledge_fts_idx","knowledge_fts_content","knowledge_fts_docsize","knowledge_fts_config"];
     let names={let mut stmt=conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;let rows=stmt.query_map([],|r|r.get::<_,String>(0))?;rows.collect::<std::result::Result<Vec<_>,_>>()?};
     if names.iter().any(|name|!ALLOWED.contains(&name.as_str())) {return Err(CoreError::new("UnknownBackupSchema","new database tables require explicit export review"));}
+    let has_mirror=names.iter().any(|name|name==FTS_MIRROR);
     conn.pragma_update(None,"secure_delete","ON")?;
     let tx=conn.transaction()?;
     for table in names {
-        let table_name=table;let table=quote(&table_name);
+        let table_name=table;
+        // Derived FTS tables are skipped by the generic review: their blob
+        // columns are FTS5's own segment index (not unreviewed user data) and
+        // their indexed text is reconciled with `chunks` below, so an UPDATE on
+        // the virtual table (which FTS5 reflects into its shadow tables in the
+        // same transaction) keeps the export exactly consistent with the base
+        // rows. Scanning/redacting the shadow tables directly would corrupt the
+        // index without changing what a query sees.
+        if DERIVED_FTS.contains(&table_name.as_str()) {continue;}
+        let table=quote(&table_name);
         let columns={let mut stmt=tx.prepare(&format!("PRAGMA table_info({table})"))?;let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?;rows.collect::<std::result::Result<Vec<_>,_>>()?};
         for (column_name,_kind) in columns {
             let column=quote(&column_name);
@@ -94,6 +118,13 @@ fn sanitize(conn:&mut Connection)->Result<()> {
                 if text!=cleaned {tx.execute(&format!("UPDATE {table} SET {column}=?1 WHERE rowid=?2"),rusqlite::params![cleaned,id])?;}
             }
         }
+    }
+    // Reconcile the derived index with the base rows AFTER redaction so a
+    // credential redacted out of `chunks.content` cannot survive as a
+    // searchable token in the exported index. Matching by chunk id, and only
+    // non-orphan rows, keeps FTS5 and `chunks` exactly consistent.
+    if has_mirror {
+        tx.execute(&format!("UPDATE {FTS_MIRROR} SET content=(SELECT c.content FROM chunks c WHERE c.id={FTS_MIRROR}.chunk_id) WHERE EXISTS(SELECT 1 FROM chunks c WHERE c.id={FTS_MIRROR}.chunk_id)"),[])?;
     }
     tx.commit()?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; VACUUM;")?;

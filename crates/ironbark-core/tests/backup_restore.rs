@@ -1,6 +1,7 @@
 //! C5 boundary tests. No fixtures replace the production backup or restore path.
 use std::{fs, io::{Cursor, Read}};
 use ironbark_core::{contracts::*, paths::RuntimePaths, store::{Store, objects::{ObjectStore, ObjectLimits}, backup::BackupService, retention::RetentionService, imports::{ImportService, ImportSource}}};
+use ironbark_core::knowledge::KnowledgeService;
 use rusqlite::params;
 use tempfile::TempDir;
 
@@ -339,4 +340,94 @@ async fn restored_partial_turn_retains_content_but_cannot_redispatch() {
     let conn=rusqlite::Connection::open(target.database).unwrap();
     let (content,status):(String,String)=conn.query_row("SELECT content,status FROM messages WHERE id=?1",[message.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();assert_eq!(content,"real partial response");assert_eq!(status,"interrupted");
     let claimed:i64=conn.query_row("SELECT dispatch_claimed FROM conversation_turns WHERE run_id=?1",[run.to_string()],|r|r.get(0)).unwrap();assert_eq!(claimed,1);
+}
+
+/// A store that has ingested knowledge must still back up and restore, and the
+/// restored store must rank the same cited hit. The FTS5 mirror (and the shadow
+/// tables FTS5 creates for it) is derived content: exported, not refused.
+#[tokio::test]
+async fn backup_after_knowledge_ingest_restores_and_retrieval_still_ranks() {
+    let f=Fixture::new().await;
+    commit_policy(&f).await;
+    let service=KnowledgeService::new(f.store.clone(),f.temp.path().join("objects"));
+    let file=f.temp.path().join("notes.txt");
+    let bytes=b"the quick brown knowledge fox".to_vec();
+    fs::write(&file,&bytes).unwrap();
+    // The revision digest is the content digest, so the ingest path itself must
+    // publish the same bytes into the CAS: a source revision is always a
+    // retention root (see referenced_digests), and nothing here writes it.
+    // Ingesting creates the FTS5 mirror lazily; this is the trigger for the gap.
+    let revision=service.ingest(f.project,SourceInput::File{path:file.to_string_lossy().into_owned()},DisclosurePolicy::ExplicitPublic).await.unwrap();
+    let before=service.retrieve(f.project,"knowledge",10).await.unwrap();
+    assert_eq!(before.len(),1,"pre-backup retrieval returns the cited hit");
+    let citation=before[0].citation.clone();
+
+    let backup=f.temp.path().join("backup");
+    let manifest=f.backup.create(&backup).await.unwrap();
+    assert_eq!(manifest.objects.len(),1,"the ingested revision's object closure is exported");
+    let target=f.target();
+    BackupService::restore(&backup,&target).await.unwrap();
+
+    let restored=Store::open(&target.database).await.unwrap();
+    let restored_service=KnowledgeService::new(restored.clone(),target.data_dir.join("objects"));
+    let after=restored_service.retrieve(f.project,"knowledge",10).await.unwrap();
+    assert_eq!(after.len(),1,"the restored store still ranks the same hit");
+    assert_eq!(after[0].citation,citation);
+    assert_eq!(after[0].citation.revision_digest.as_str(),revision.digest.as_str());
+    assert!(after[0].text.contains("knowledge"));
+    // The exported index text is exactly the exported base-row text: no
+    // half-restored or divergent mirror.
+    let divergent=restored.with_connection(|conn|Ok(conn.query_row("SELECT count(*) FROM knowledge_fts f JOIN chunks c ON c.id=f.chunk_id WHERE f.content != c.content",[],|r|r.get::<_,i64>(0))?)).await.unwrap();
+    assert_eq!(divergent,0);
+}
+
+/// The derived-FTS exemption is an exact allowlist, not a name prefix, and the
+/// fail-closed blob rule still holds for reviewed tables. Both must refuse.
+#[tokio::test]
+async fn derived_fts_exemption_does_not_widen_the_allowlist() {
+    for mutation in ["lookalike_fts","blob_column"] {
+        let f=Fixture::new().await;
+        f.store.with_connection(move |conn|{
+            if mutation=="lookalike_fts" {
+                conn.execute_batch("CREATE TABLE knowledge_fts_extra(material TEXT); INSERT INTO knowledge_fts_extra VALUES('never-export');")?;
+            } else {
+                conn.execute_batch("ALTER TABLE provider_references ADD COLUMN sneak BLOB; INSERT INTO provider_references(id,config,sneak) VALUES('b','{}',x'00ff00ff');")?;
+            }
+            Ok(())
+        }).await.unwrap();
+        let backup=f.temp.path().join("unsafe-backup");
+        assert_eq!(f.backup.create(&backup).await.unwrap_err().code,"UnknownBackupSchema");
+        assert!(!backup.exists());
+    }
+}
+
+/// The derived index must not retain a token that redaction removed from the
+/// base row: the exported FTS mirror is reconciled with `chunks` after redaction.
+#[tokio::test]
+async fn exported_fts_index_cannot_retain_a_redacted_credential_token() {
+    let f=Fixture::new().await;
+    let service=KnowledgeService::new(f.store.clone(),f.temp.path().join("objects"));
+    let file=f.temp.path().join("creds.txt");
+    let bytes=b"release notes api_key: zzsecretzz42 tail".to_vec();
+    fs::write(&file,&bytes).unwrap();
+    f.objects.put(Cursor::new(bytes),100).await.unwrap();
+    service.ingest(f.project,SourceInput::File{path:file.to_string_lossy().into_owned()},DisclosurePolicy::ExplicitPublic).await.unwrap();
+
+    let backup=f.temp.path().join("backup");
+    f.backup.create(&backup).await.unwrap();
+    let conn=rusqlite::Connection::open(backup.join("core.sqlite3")).unwrap();
+    let redacted:i64=conn.query_row("SELECT count(*) FROM chunks WHERE content LIKE '%[REDACTED]%'",[],|r|r.get(0)).unwrap();
+    assert_eq!(redacted,1,"the base row was redacted");
+    let indexed:i64=conn.query_row("SELECT count(*) FROM knowledge_fts WHERE knowledge_fts MATCH 'zzsecretzz42'",[],|r|r.get(0)).unwrap();
+    assert_eq!(indexed,0,"a redacted credential token must not survive as a searchable index term");
+    let residual:i64=conn.query_row("SELECT count(*) FROM knowledge_fts WHERE content LIKE '%zzsecretzz42%'",[],|r|r.get(0)).unwrap();
+    assert_eq!(residual,0,"the derived index text is reconciled with the redacted base row");
+}
+
+/// Commit a minimal policy so retrieval is permitted; no product command
+/// commits one yet, so the fixture inserts it exactly as other knowledge tests do.
+async fn commit_policy(f:&Fixture) {
+    let project=f.project;
+    let policy=serde_json::to_string(&ProjectPolicy{version:1,project_id:project,allowed_connection_ids:vec!["local".into()],allowed_tools:vec![],read_roots:vec![],write_roots:vec![],network_destinations:vec![],local_only:false,max_workers:2,max_requests:10,max_cost_microusd:None,spend_policy:SpendPolicy::FreeOnly,allow_unknown_cost:false}).unwrap();
+    f.store.with_transaction(move |tx|{tx.execute("INSERT INTO policies(project_id,version,body) VALUES(?1,1,?2)",params![project.to_string(),policy])?;Ok(())}).await.unwrap();
 }

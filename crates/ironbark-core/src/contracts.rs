@@ -367,6 +367,8 @@ pub struct Project { pub id: ProjectId, pub name: String, pub root: String, #[ts
 // second indirection layer.
 #[allow(clippy::large_enum_variant)]
 pub enum CoreCommand { Status {}, Events { #[ts(type = "number")] after: u64 }, ProjectList {}, ProjectCreate { name: String, root: String }, Doctor {}, Shutdown {},
+    ProjectPolicySet { project_id: ProjectId, policy: ProjectPolicy },
+    ProjectPolicyShow { project_id: ProjectId },
     ArtifactRead { project_id: ProjectId, artifact_id: ArtifactId },
     ImportPreview { project_id: ProjectId, source: ImportSource },
     ImportApply { project_id: ProjectId, preview_digest: Digest },

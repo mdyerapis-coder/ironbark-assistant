@@ -22,6 +22,7 @@ use crate::store::{
     retention::RetentionService, Store,
 };
 use crate::knowledge::{KnowledgeService, CitationResolver, MemoryService, EmbeddingIndex};
+use crate::policy::service::PolicyService;
 use crate::connections::webgpt::WebGptService;
 use crate::judgments::QualificationStore;
 use crate::automation::AutomationBroker;
@@ -51,6 +52,7 @@ impl CoreServices {
         matches!(command,
             C::ArtifactRead { .. } | C::ImportPreview { .. } | C::ImportApply { .. }
             | C::BackupCreate { .. } | C::RetentionSweep { .. } | C::ObjectCapacity { .. }
+            | C::ProjectPolicySet { .. } | C::ProjectPolicyShow { .. }
             | C::ConversationCreate { .. } | C::ConversationHistory { .. } | C::ConversationRename { .. }
             | C::ConversationSearch { .. } | C::ConversationExport { .. } | C::ConversationEdit { .. }
             | C::ConversationArchive { .. } | C::ConversationDelete { .. } | C::ConversationQueueTurn { .. }
@@ -116,6 +118,14 @@ impl CoreServices {
             }
             C::ObjectCapacity { project_id } => {
                 Ok(CoreReply::Ok { value: serde_json::to_value(self.objects(*project_id)?.capacity().await?)? })
+            }
+            C::ProjectPolicySet { project_id, policy } => {
+                let service = PolicyService::new(self.store.clone());
+                Ok(CoreReply::Ok { value: serde_json::to_value(service.set(*project_id, policy.clone()).await?)? })
+            }
+            C::ProjectPolicyShow { project_id } => {
+                let service = PolicyService::new(self.store.clone());
+                Ok(CoreReply::Ok { value: serde_json::to_value(service.latest(*project_id).await?)? })
             }
             C::ConversationCreate { project_id } => {
                 let service = ConversationService::new(self.store.clone());

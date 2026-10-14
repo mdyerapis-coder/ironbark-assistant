@@ -121,6 +121,10 @@ export class JsonRpcClient {
   async reply(id: number, result: unknown): Promise<void> {
     await this.#process.writeFrame({ jsonrpc: '2.0', id, result });
   }
+  /** Reply to a server-originated request with a JSON-RPC error (no method). */
+  async replyError(id: number, code: number, message: string): Promise<void> {
+    await this.#process.writeFrame({ jsonrpc: '2.0', id, error: { code, message } });
+  }
   async close(): Promise<void> {
     for (const pending of [...this.#pending.values()]) {
       clearTimeout(pending.timer);

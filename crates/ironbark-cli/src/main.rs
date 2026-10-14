@@ -9,8 +9,8 @@ use ironbark_core::{
     conversations::{ExportFormat, RunResolution},
     contracts::{
         ArtifactId, BranchId, CheckpointPhase, ContentPart, ConversationId, CoreCommand, CoreReply,
-        Digest, HarnessKind, MessageId, ProjectId, RecoveryDecision, ResultManifest, RunId,
-        RoutePin,
+        Digest, HarnessKind, MessageId, ProjectId, ProjectPolicy, RecoveryDecision, ResultManifest,
+        RunId, RoutePin,
     },
     error::CoreError,
     ipc::CoreClient,
@@ -36,6 +36,8 @@ enum Command {
     Shutdown,
     /// Project lifecycle.
     Project { #[command(subcommand)] command: ProjectCommand },
+    /// Project policy: commit a new version, or read the latest committed one.
+    Policy { #[command(subcommand)] command: PolicyCommand },
     /// Additive, reviewed import (document or native transcript).
     Import { #[command(subcommand)] command: ImportCommand },
     /// Read back a durable CAS artifact (raw bytes on stdout).
@@ -61,6 +63,15 @@ enum Command {
 enum ProjectCommand {
     Create { name: String, #[arg(long)] root: Option<std::path::PathBuf> },
     List,
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Commit a new policy version, parsed from a `ProjectPolicy` JSON file. The
+    /// policy's own `project_id` must match `--project`.
+    Set { #[arg(long)] project: String, #[arg(long)] file: std::path::PathBuf },
+    /// Print the latest committed policy for a project.
+    Show { #[arg(long)] project: String },
 }
 
 #[derive(Subcommand)]
@@ -231,6 +242,7 @@ impl Command {
                 C::ProjectCreate { name: name.clone(), root: root.to_string_lossy().into_owned() }
             }
             Command::Project { command: ProjectCommand::List } => C::ProjectList {},
+            Command::Policy { command } => command.build()?,
             Command::Import { command: ImportCommand::Preview { project, file, kind, origin } } => {
                 let format = match kind.as_str() {
                     "document" => ImportFormat::Document,
@@ -259,6 +271,20 @@ impl Command {
             // Handled directly in run() before build is reached.
             Command::Events { .. } => return Err("events streams directly; use the events subcommand".into()),
             Command::Raw { json } => serde_json::from_str(json).map_err(display)?,
+        })
+    }
+}
+
+impl PolicyCommand {
+    fn build(&self) -> Result<CoreCommand, String> {
+        use CoreCommand as C;
+        Ok(match self {
+            PolicyCommand::Set { project, file } => {
+                let raw = std::fs::read_to_string(file).map_err(|e| format!("read policy {file:?}: {e}"))?;
+                let policy = serde_json::from_str::<ProjectPolicy>(&raw).map_err(|e| format!("policy: {e}"))?;
+                C::ProjectPolicySet { project_id: project_id(project)?, policy }
+            }
+            PolicyCommand::Show { project } => C::ProjectPolicyShow { project_id: project_id(project)? },
         })
     }
 }

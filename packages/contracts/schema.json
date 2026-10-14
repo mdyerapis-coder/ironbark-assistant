@@ -814,6 +814,46 @@
         {
           "additionalProperties": false,
           "properties": {
+            "policy": {
+              "$ref": "#/$defs/ProjectPolicy"
+            },
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "project_policy_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id",
+            "policy"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "project_policy_show",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "artifact_id": {
               "format": "uuid",
               "type": "string"

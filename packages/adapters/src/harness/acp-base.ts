@@ -1,4 +1,6 @@
 import { mkdirSync } from 'node:fs';
+import { mkdir, open, readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import type { ActionSpec, CapabilityState, CapabilityObservation, ContextPackage, HarnessDescriptor, HarnessKind, OpenSessionInput, PermissionAnswer, SessionRef, TurnInput, WorkerEvent } from '../../../contracts/src/generated';
 import { canonical, checkTurnBudget, contextPrefix, deriveActionSpec, digest, type NativePermissionHost, type NativePermissionRequest } from './native/host';
 import { NATIVE_STATE_ROOT, describeExit, runProbe, spawnNativeProcess, type NativeProcess, type SpawnOptions, workerEnv } from './native/process';
@@ -8,6 +10,22 @@ import type { HarnessAdapter } from './types';
 const ACP_PROTOCOL_VERSION = 1;
 const ACP_TURN_WINDOW_MS = 3_000_000;
 const ACP_QUEUE_TAKE_MS = 120_000;
+/**
+ * ACP client file access (`fs/write_text_file`/`fs/read_text_file`) is served
+ * only for the live native-harness smoke. OMP's edit tool routes writes through
+ * the client, so without this the adapter advertises the capability and then
+ * answers `{denied:true}`, which OMP treats as success while nothing is written.
+ * Kept off the portable release path.
+ */
+const LIVE_FS_CLIENT = process.env.IRONBARK_LIVE_HARNESS === '1';
+/** A client-requested path resolved inside the session worktree; any escape is rejected. */
+function workspacePath(worktree: string, requested: string): string {
+  if (!requested) throw new Error('fs_request_path_required');
+  const root = resolve(worktree);
+  const target = isAbsolute(requested) ? resolve(requested) : resolve(root, requested);
+  if (target !== root && !target.startsWith(`${root}${sep}`)) throw new Error(`fs_request_outside_worktree:${target}`);
+  return target;
+}
 
 type ApprovalRecord = { request: NativePermissionRequest; action: unknown; resolve: (result: { allowed: boolean; optionId?: string }) => void };
 type AcpTurnState = {
@@ -202,8 +220,39 @@ export class AcpAdapterBase implements HarnessAdapter {
       return;
     }
     // Unrecognised server request: fail closed — deny and record.
+    if (LIVE_FS_CLIENT && (item.method === 'fs/write_text_file' || item.method === 'fs/read_text_file')) {
+      void this.#handleFsRequest(session, item.id, item.method, params).catch(async error => {
+        const reason = error instanceof Error ? error.message : String(error);
+        await session.client.replyError(item.id, -32603, reason).catch(() => undefined);
+        await this.host.recordNativeEvent({ event: 'fs_request_denied', method: item.method, reason }, session.input).catch(() => undefined);
+      });
+      return;
+    }
     void session.client.reply(item.id, { denied: true }).catch(() => undefined);
     void this.host.recordNativeEvent({ event: 'server_request_denied', method: item.method }, session.input).catch(() => undefined);
+  }
+
+  /** Serve one ACP client file request within the session worktree only. */
+  async #handleFsRequest(session: AcpSession, id: number, method: string, params: Record<string, unknown>): Promise<void> {
+    const requested = typeof params['path'] === 'string' ? params['path'] : '';
+    const path = workspacePath(session.input.cwd, requested);
+    if (method === 'fs/write_text_file') {
+      const content = typeof params['content'] === 'string' ? params['content'] : '';
+      await mkdir(dirname(path), { recursive: true });
+      const handle = await open(path, 'w');
+      try {
+        await handle.writeFile(content, 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await session.client.reply(id, null);
+      await this.host.recordNativeEvent({ event: 'fs_write_landed', session_id: session.sessionId, path, bytes: Buffer.byteLength(content) }, session.input).catch(() => undefined);
+      return;
+    }
+    const text = await readFile(path, 'utf8');
+    await session.client.reply(id, { content: text });
+    await this.host.recordNativeEvent({ event: 'fs_read_served', session_id: session.sessionId, path }, session.input).catch(() => undefined);
   }
 
   #applyUpdate(session: AcpSession, update: Record<string, unknown>, push: (event: WorkerEvent) => void, turnId: string, messageId: string): void {

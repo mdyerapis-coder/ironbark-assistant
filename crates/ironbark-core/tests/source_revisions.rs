@@ -6,11 +6,13 @@
 //! - An encrypted PDF is refused, not indexed as a blank success.
 
 use ironbark_core::contracts::{
-    Citation, CitationLocator, CitationView, DisclosurePolicy, ProjectId, SourceInput,
+    ArtifactId, Citation, CitationLocator, CitationView, DisclosurePolicy, ProjectId, SourceInput,
 };
 use ironbark_core::error::CoreError;
 use ironbark_core::knowledge::{locators, KnowledgeService};
+use ironbark_core::store::objects::{ObjectLimits, ObjectStore};
 use ironbark_core::store::Store;
+use std::io::Read;
 use tempfile::tempdir;
 
 struct Fixture {
@@ -204,4 +206,112 @@ fn extraction_error_codes_are_typed() {
     // Guards the error contract the ingest path depends on.
     let err = CoreError::new("extraction_empty", "no units");
     assert_eq!(format!("{err}"), "extraction_empty: no units");
+}
+
+/// Published CAS objects for a project: dot-entries are the lease and staging
+/// dir, never objects.
+fn cas_objects(f: &Fixture) -> usize {
+    std::fs::read_dir(f._dir.path().join("objects"))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        .count()
+}
+
+/// The project artifact row the CAS publish created for a digest.
+async fn cas_artifact(f: &Fixture, digest: &str) -> ArtifactId {
+    let project = f.project;
+    let digest = digest.to_string();
+    let id: String = f
+        .store
+        .with_connection(move |conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM artifacts WHERE project_id=?1 AND digest=?2 ORDER BY rowid LIMIT 1",
+                rusqlite::params![project.to_string(), digest],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    ArtifactId(uuid::Uuid::parse_str(&id).unwrap())
+}
+
+/// A revision digest is a retention root, so the ingest path itself must write
+/// the source bytes into the project CAS; a missing object fails every backup
+/// closed with `IntegrityMismatch`. Nothing in this test publishes the object.
+#[tokio::test]
+async fn file_ingest_publishes_the_source_bytes_into_the_cas() {
+    let f = setup().await;
+    let file = f._dir.path().join("cited.txt");
+    let bytes = b"cited bytes must live in the content-addressed store".to_vec();
+    tokio::fs::write(&file, &bytes).await.unwrap();
+    let input = || SourceInput::File { path: file.to_string_lossy().into_owned() };
+
+    let revision = f.service.ingest(f.project, input(), DisclosurePolicy::ExplicitPublic).await.unwrap();
+
+    let object = f._dir.path().join("objects").join(revision.digest.as_str());
+    assert_eq!(
+        std::fs::read(&object).expect("the ingest published the revision digest into the CAS"),
+        bytes,
+        "the CAS object named by the revision digest is byte-identical to the source file"
+    );
+    assert_eq!(cas_objects(&f), 1, "the ingest published exactly one content-addressed object");
+
+    // Reach the object through the CAS itself: `get` re-hashes what it opens, so
+    // this also proves the bytes are the object the digest names.
+    let objects = ObjectStore::new(f.store.clone(), f.project, f._dir.path().join("objects"), ObjectLimits::default()).unwrap();
+    let mut reader = objects.get(cas_artifact(&f, revision.digest.as_str()).await).await.unwrap();
+    assert_eq!(reader.digest, revision.digest);
+    let mut stored = Vec::new();
+    reader.read_to_end(&mut stored).unwrap();
+    assert_eq!(stored, bytes);
+
+    // Re-publishing identical bytes is idempotent: one revision, one object.
+    let again = f.service.ingest(f.project, input(), DisclosurePolicy::ExplicitPublic).await.unwrap();
+    assert_eq!(again.digest, revision.digest, "identical bytes still resolve to one revision");
+    assert_eq!(cas_objects(&f), 1, "an idempotent publish does not duplicate or replace the object");
+    assert_eq!(std::fs::read(&object).unwrap(), bytes, "the published object is unchanged");
+}
+
+/// `Attachment` bytes already ARE the CAS artifact, so publishing them again
+/// must be verified idempotent, not assumed: same object, same digest.
+#[tokio::test]
+async fn attachment_ingest_republishes_its_existing_object_idempotently() {
+    let f = setup().await;
+    let bytes = b"attachment bytes already in the content-addressed store".to_vec();
+    let objects = ObjectStore::new(f.store.clone(), f.project, f._dir.path().join("objects"), ObjectLimits::default()).unwrap();
+    let artifact = objects.put(std::io::Cursor::new(bytes.clone()), 1024).await.unwrap();
+    let digest: String = f
+        .store
+        .with_connection(move |conn| Ok(conn.query_row("SELECT digest FROM artifacts WHERE id=?1", [artifact.to_string()], |row| row.get(0))?))
+        .await
+        .unwrap();
+
+    let revision = f
+        .service
+        .ingest(f.project, SourceInput::Attachment { artifact_id: artifact }, DisclosurePolicy::ExplicitPublic)
+        .await
+        .unwrap();
+    assert_eq!(revision.digest.as_str(), digest, "the attachment's CAS digest is the revision digest");
+    assert_eq!(cas_objects(&f), 1, "re-publishing an existing object neither duplicates nor clobbers it");
+    assert_eq!(std::fs::read(f._dir.path().join("objects").join(revision.digest.as_str())).unwrap(), bytes);
+}
+
+/// The publish runs after extraction + whole-source validation, so a refused
+/// source leaves no orphan object behind.
+#[tokio::test]
+async fn refused_source_publishes_no_cas_object() {
+    let f = setup().await;
+    // Create the project CAS root first so this reads a real, empty store.
+    ObjectStore::new(f.store.clone(), f.project, f._dir.path().join("objects"), ObjectLimits::default()).unwrap();
+    let empty = f._dir.path().join("empty.txt");
+    tokio::fs::write(&empty, b"").await.unwrap();
+
+    let err = f
+        .service
+        .ingest(f.project, SourceInput::File { path: empty.to_string_lossy().into_owned() }, DisclosurePolicy::ExplicitPublic)
+        .await
+        .expect_err("an empty source cannot validate");
+    assert_eq!(err.code, "extraction_empty");
+    assert_eq!(cas_objects(&f), 0, "a refused source publishes no CAS object");
 }
