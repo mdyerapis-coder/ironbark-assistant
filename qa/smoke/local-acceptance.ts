@@ -556,6 +556,7 @@ try {
 
   const receipt = {
     state: evidence.state ?? "failed",
+    command: "bun qa/smoke/local-acceptance.ts",
     mechanism: "the real packaging/local-install.sh installs the release package under a temporary prefix; the INSTALLED core daemon and INSTALLED CLI run in isolated XDG sandboxes; every result is the daemon's own reply",
     design_acceptance_doc: "qa/smoke/e2e-acceptance.md",
     cli_surface_observed: ["project", "policy", "import", "artifact", "backup", "retention", "object-capacity", "conversation", "run", "checkpoint", "status", "events", "doctor", "shutdown", "command"],
