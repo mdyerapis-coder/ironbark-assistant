@@ -2,6 +2,7 @@
 // The Rust core (src/judgments/qualification.rs) mirrors the gate and report
 // shape exactly; field names and order must stay wire-compatible.
 import { sha256, lexicalJson } from "../identity";
+import { fileURLToPath } from "node:url";
 import type { JudgmentDomain } from "../../../../contracts/src/generated";
 export type { JudgmentDomain } from "../../../../contracts/src/generated";
 /** Curated class vocabulary. Every domain must represent all four in holdout. */
@@ -39,11 +40,20 @@ export interface DomainDefinition {
   /** Fixed label set, or use rowCandidates for per-row (policy-filtered) sets. */
   candidates: readonly string[];
   rowCandidates?: (row: FixtureRow) => readonly string[];
-  /** Curated expected label from task semantics, never from the evaluated model. */
-  labelRule: (meta: Record<string, number>) => string;
+  /** Validates that a reviewed expected label is a canonical candidate or ABSTAIN. */
+  validateExpected: (label: string, rowCandidates: readonly string[]) => void;
   requiredClasses: readonly FixtureClass[];
   /** Frozen fixture sources (relative paths from IRONBARK_ROOT, or URLs). */
   fixtures: readonly string[];
+}
+
+/** Shared candidate-membership validation: accepts ABSTAIN unconditionally and any
+ * exact canonical label in the supplied row candidate set. Rejects every other
+ * string so metadata-derived or invented labels can never be treated as gold. */
+export function validateExpected(label: string, rowCandidates: readonly string[]): void {
+  if (label === "ABSTAIN") return;
+  if (rowCandidates.includes(label)) return;
+  throw new Error(`invalid expected label: ${label} not in candidate set`);
 }
 
 export interface Splits {
@@ -150,43 +160,21 @@ export function assignSplits(ids: readonly string[]): Record<string, SplitName> 
 
 // --- Binomial helpers (exact Clopper-Pearson bounds, log-space) -------------
 
-function lgamma(x: number): number {
-  let g = 0.99999999999980993;
-  const c = [
-    76.18009172547476, -86.50532213015425, 24.014098240831993,
-    -1.3684725882719866, 0.13613433983709754, -0.5134012141517862e-2,
-    0.831720265115505, -0.6065165247679578e-2,
-  ];
-  let a = x;
-  let t = x + 5.5;
-  t -= (x + 0.5) * Math.log(t);
-  let s = 1.000000000190015;
-  for (let i = 0; i < c.length; i++) {
-    a += 1;
-    s += c[i] / a;
-  }
-  return 0.9189385332046727 + Math.log(s) - t;
-}
-
-function binomLnPmf(k: number, n: number, p: number): number {
-  if (n < 0 || k < 0 || k > n) return -Infinity;
-  if (p <= 0) return k === 0 ? 0 : -Infinity;
-  if (p >= 1) return k === n ? 0 : -Infinity;
-  return lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1)
-    + k * Math.log(p) + (n - k) * Math.log1p(-p);
-}
 
 /** Exact binomial CDF P(X <= x) for small n, accumulated in log space. */
 export function binomCdf(x: number, n: number, p: number): number {
   if (x < 0) return 0;
-  if (x >= n) return 1;
+  if (x >= n || p <= 0) return 1;
+  if (p >= 1) return 0;
+  const logFailure = Math.log1p(-p);
+  let logTerm = n * logFailure;
   let logCdf = -Infinity;
   for (let k = 0; k <= x; k++) {
-    const l = binomLnPmf(k, n, p);
-    if (l === -Infinity) continue;
-    logCdf = logCdf === -Infinity ? l : logCdf + Math.log1p(Math.exp(l - logCdf));
+    if (k > 0) logTerm += Math.log(n - k + 1) - Math.log(k) + Math.log(p) - logFailure;
+    const max = Math.max(logCdf, logTerm);
+    logCdf = max + Math.log1p(Math.exp(Math.min(logCdf, logTerm) - max));
   }
-  return Math.exp(logCdf);
+  return Math.min(1, Math.exp(logCdf));
 }
 
 /**
@@ -278,6 +266,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 export function validateFixtureRows(rows: unknown[]): FixtureRow[] {
   const out: FixtureRow[] = [];
+  const seenContent = new Set<string>();
+  const seenNormalized = new Set<string>();
+  const seenIds = new Set<string>();
   for (const r of rows) {
     if (!isPlainObject(r)) throw new Error("fixture row is not an object");
     const row = r as Record<string, unknown>;
@@ -298,9 +289,18 @@ export function validateFixtureRows(rows: unknown[]): FixtureRow[] {
     if (content_digest !== sha256(text)) {
       throw new Error(`fixture row ${id} content_digest mismatch (tampered payload)`);
     }
+    if (!REQUIRED_CLASSES.includes(row.class as FixtureClass)) {
+      throw new Error(`fixture row ${id} has unknown class`);
+    }
+    if (seenIds.has(id)) throw new Error(`fixture row ${id} has duplicate ID`);
+    if (seenContent.has(content_digest)) throw new Error(`fixture row ${id} has duplicate content; repeated observations cannot qualify a domain`);
+    if (seenNormalized.has(text.trim())) throw new Error(`fixture row ${id} has duplicate normalized content; repeated observations cannot qualify a domain`);
+    seenIds.add(id);
+    seenContent.add(content_digest);
+    seenNormalized.add(text.trim());
     out.push({
       id, domain, version,
-      class: meta.class as RowClass,
+      class: row.class as RowClass,
       text, expected,
       meta: meta as Record<string, number>,
       content_digest,
@@ -317,11 +317,12 @@ export function validateFixtureRows(rows: unknown[]): FixtureRow[] {
  */
 export async function buildDataset(domain: DomainDefinition): Promise<Dataset> {
   const root = process.env.IRONBARK_ROOT ?? process.cwd();
-  const all: FixtureRow[] = [];
+  const raw: unknown[] = [];
   for (const f of domain.fixtures) {
     const text = await Bun.file(resolveFixture(root, f)).text();
-    all.push(...validateFixtureRows(loadJsonl(text)));
+    raw.push(...loadJsonl(text));
   }
+  const all = validateFixtureRows(raw);
   const ranked = assignSplits(all.map((r) => r.id));
   for (const row of all) {
     if (ranked[row.id] !== row.split) {
@@ -331,23 +332,24 @@ export async function buildDataset(domain: DomainDefinition): Promise<Dataset> {
   const development = all.filter((r) => r.split === "development");
   const calibration = all.filter((r) => r.split === "calibration");
   const holdout = all.filter((r) => r.split === "holdout");
-  // Re-validate expected-label consistency against the domain curation rule.
+  // Validate each expected label against the domain candidate set (or per-row
+  // policy-filtered set). Expected labels are curated assertions, not metadata-
+  // derived re-derivations — labelRule(meta) is no longer gold-label authority.
   for (const row of all) {
-    const rederived = domain.labelRule(row.meta);
-    if (rederived !== row.expected) {
-      throw new Error(`fixture row ${row.id} expected-label drift: ${rederived} != ${row.expected}`);
-    }
+    const rowCandidates = domain.rowCandidates ? domain.rowCandidates(row) : domain.candidates;
+    domain.validateExpected(row.expected, rowCandidates);
   }
   const splits: Splits = { development, calibration, holdout };
   return {
     domain,
     splits,
-    dataset_digest: sha256(lexicalJson({ domain: domain.domain, version: domain.version, holdout: holdout.map((r) => r.id) })),
+    dataset_digest: sha256(lexicalJson({ domain: domain.domain, version: domain.version, rows: all })),
     calibration_digest: sha256(lexicalJson({ calibration: calibration.map((r) => r.id) })),
   };
 }
 
 function resolveFixture(root: string, f: string): string {
-  if (f.startsWith("http://") || f.startsWith("https://") || f.startsWith("file://")) return f;
+  if (f.startsWith("file://")) return fileURLToPath(f);
+  if (f.startsWith("http://") || f.startsWith("https://")) return f;
   return root.endsWith("/") ? root + f : root + "/" + f;
 }

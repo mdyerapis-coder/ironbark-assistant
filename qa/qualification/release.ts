@@ -1,41 +1,13 @@
 #!/usr/bin/env bun
-/**
- * qa/qualification/release.ts — D5 release gate checker.
- *
- * Binds every gate in a packaging manifest's `release_gates.required` to actual
- * evidence on disk. A release is `passed` only when every required gate has a
- * receipt that says so; a gate with no receipt, an unreadable or malformed
- * receipt, a receipt whose state is not "passed", a stale artifact digest or a
- * stale manifest binding is `blocked`. Nothing here throws for missing
- * evidence, and nothing goes green by omission: a manifest with no required
- * gates is blocked too.
- *
- * A receipt is a JSON file written by the smoke/check that produced it, under
- * the plan's evidence directory (`.superpowers/sdd/<plan>/`, overridable with
- * --evidence-dir), named after the gate it backs:
- *
- *   <evidence-dir>/<gate-slug>.json        e.g. cargo-test-workspace.json
- *
- * A receipt that declares its own `gate` is found by that field too, so an
- * existing smoke that writes e.g. C4-smoke.json is bound by adding
- * `"gate": "qa/smoke/crash-recovery.ts"` rather than renaming the file.
- *
- * Receipt fields read here:
- *   state             required; only "passed" counts.
- *   command           required; the command that produced the receipt.
- *   gate              optional; must name the required gate it backs.
- *   manifest_version  optional; must equal the manifest's version.
- *   manifest_sha256   optional; must equal the sha256 of the manifest file.
- *   artifacts         optional; [{ path, sha256, component? }] — each digest is
- *                     recomputed from the tree and must still match, and a
- *                     named component must be declared in the manifest.
- *
- * CLI: bun qa/qualification/release.ts --manifest packaging/manifest.json [--evidence-dir DIR]
- * stdout is the report as JSON. Exit: 0 passed, 1 blocked, 2 usage error.
+/** Exact-source release checker. Only v2 observed gate receipts qualify.
+ * Current Git source, inventory, toolchain, argv and cwd must match both
+ * boundaries of every gate. Legacy label-only receipts remain blocked.
+ * CLI: --manifest PATH [--evidence-dir DIR]; exits 0 passed, 1 blocked, 2 usage.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { argvForGate, captureSourceIdentity, isSourceIdentity, sameSourceIdentity, type SourceIdentity } from "./source-identity";
 
 /** One entry of the manifest's `components` array, as far as the checker reads it. */
 export interface ManifestComponent {
@@ -72,10 +44,22 @@ interface RawComponent {
 
 /** The fields read from an evidence receipt: every field is untrusted. */
 interface RawReceipt {
+  schema_version?: unknown;
+  argv?: unknown;
+  cwd?: unknown;
+  started_at?: unknown;
+  finished_at?: unknown;
+  recorded_at?: unknown;
+  exit_code?: unknown;
+  source_before?: unknown;
+  source_after?: unknown;
+  stdout?: unknown;
+  stderr?: unknown;
+  errors?: unknown;
   state?: unknown;
   command?: unknown;
   gate?: unknown;
-  manifest_version?: unknown;
+  manifest_path?: unknown;
   manifest_sha256?: unknown;
   artifacts?: unknown;
 }
@@ -149,6 +133,61 @@ const HEX64 = /^[0-9a-f]{64}$/;
 
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
+export interface GateDecision {
+  outcome: "passed" | "blocked";
+  reasons: string[];
+}
+
+/** Untrusted JSON boundary, not a compatibility adapter for old receipts. */
+export function verifyGateReceipt(value: unknown, requiredIdentity: SourceIdentity): GateDecision {
+  const reasons: string[] = [];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { outcome: "blocked", reasons: ["receipt is not an object"] };
+  const receipt = value as RawReceipt;
+  if (receipt.schema_version !== 2) reasons.push("receipt schema_version must be 2; rerun the gate with the current runner");
+  if (receipt.state !== "passed") reasons.push("gate was not observed passing; fix the failure and rerun");
+  if (receipt.exit_code !== 0) reasons.push("gate has no successful observed exit code");
+  if (!Array.isArray(receipt.errors) || receipt.errors.length !== 0) reasons.push("gate observation contains errors or missing error accounting");
+  if (typeof receipt.gate !== "string") reasons.push("receipt has no exact gate");
+  else {
+    try {
+      const expected = argvForGate(receipt.gate);
+      if (!Array.isArray(receipt.argv) || JSON.stringify(receipt.argv) !== JSON.stringify(expected)) reasons.push("receipt argv does not match the required literal gate argv");
+      if (receipt.command !== expected.join(" ")) reasons.push("receipt command does not match exact argv");
+    } catch (error) {
+      reasons.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (receipt.cwd !== requiredIdentity.root) reasons.push("receipt cwd does not match the source checkout root");
+  const selectedManifest = requiredIdentity.files.find((file) => file.path === receipt.manifest_path && file.mode !== "120000");
+  if (!selectedManifest || receipt.manifest_sha256 !== selectedManifest.sha256) reasons.push("receipt manifest is missing, stale or outside the selected source inventory");
+  for (const key of ["source_before", "source_after"] as const) {
+    const identity = receipt[key];
+    if (!isSourceIdentity(identity)) reasons.push(`${key} is missing or malformed; rerun the gate against complete source inputs`);
+    else if (!sameSourceIdentity(identity, requiredIdentity)) reasons.push(`${key} does not match required source identity`);
+  }
+  if (isSourceIdentity(receipt.source_before) && isSourceIdentity(receipt.source_after) && !sameSourceIdentity(receipt.source_before, receipt.source_after)) reasons.push("source changed during gate");
+  const started = typeof receipt.started_at === "string" ? Date.parse(receipt.started_at) : NaN;
+  const finished = typeof receipt.finished_at === "string" ? Date.parse(receipt.finished_at) : NaN;
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started || receipt.recorded_at !== receipt.finished_at) reasons.push("receipt has missing or inconsistent observation timestamps");
+  for (const key of ["stdout", "stderr"] as const) {
+    const value = receipt[key];
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      reasons.push(`${key} bounded channel accounting is missing`);
+      continue;
+    }
+    const channel = value as Record<string, unknown>;
+    const total = channel.total_bytes;
+    const dropped = channel.dropped_bytes;
+    if (typeof channel.tail !== "string" || (channel.encoding !== "utf8" && channel.encoding !== "base64") || typeof total !== "number" || !Number.isSafeInteger(total) || total < 0 || typeof dropped !== "number" || !Number.isSafeInteger(dropped) || dropped < 0) {
+      reasons.push(`${key} bounded channel accounting is malformed`);
+      continue;
+    }
+    const retained = Buffer.byteLength(channel.tail, channel.encoding === "base64" ? "base64" : "utf8");
+    if (retained !== Math.min(total, 65536) || dropped !== total - retained || (channel.encoding === "base64" && Buffer.from(channel.tail, "base64").toString("base64") !== channel.tail)) reasons.push(`${key} byte tail or loss accounting is inconsistent`);
+  }
+  return { outcome: reasons.length === 0 ? "passed" : "blocked", reasons };
+}
+
 /** Receipt-file stem for a gate: lowercase, every run of non-alphanumerics becomes one dash. */
 export function gateSlug(gate: string): string {
   const slug = gate.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -180,13 +219,15 @@ export async function releaseCheck(
   options: ReleaseCheckOptions = {},
 ): Promise<ReleaseReport> {
   const root = resolve(options.root ?? process.cwd());
-  const manifestPath = options.manifestPath ? resolve(root, options.manifestPath) : null;
+  const manifestPath = resolve(root, options.manifestPath ?? "packaging/manifest.json");
   try {
     const facts = readManifest(manifest);
     let manifestDigest: string | null = null;
     if (manifestPath) {
       try {
         manifestDigest = sha256(await readFile(manifestPath));
+        const onDisk: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
+        if (JSON.stringify(onDisk) !== JSON.stringify(manifest)) facts.blockers.push("requested manifest differs from its on-disk source; use the exact manifest from this checkout");
       } catch (error) {
         facts.blockers.push(`manifest ${display(root, manifestPath)} cannot be read: ${message(error)}`);
       }
@@ -195,6 +236,7 @@ export async function releaseCheck(
       ? resolve(root, options.evidenceDir)
       : await defaultEvidenceDir(root);
     const evidence = await readEvidenceDir(evidenceDir, root);
+    const requiredIdentity = await captureSourceIdentity(root);
     const gates: GateReport[] = [];
     for (const gate of facts.required) {
       gates.push(
@@ -203,8 +245,9 @@ export async function releaseCheck(
           evidenceDir,
           receipts: evidence.receipts,
           components: facts.components,
-          version: facts.version,
+          manifestRelative: relative(root, manifestPath),
           manifestDigest,
+          requiredIdentity,
         }),
       );
     }
@@ -223,6 +266,7 @@ export async function releaseCheck(
         ),
       ],
     }));
+    if (!sameSourceIdentity(requiredIdentity, await captureSourceIdentity(root))) facts.blockers.push("source changed during release checking; stop mutations and rerun");
     const blockers = [
       ...facts.blockers,
       ...(evidence.problem ? [evidence.problem] : []),
@@ -342,8 +386,9 @@ interface GateContext {
   evidenceDir: string;
   receipts: Receipt[];
   components: ManifestComponent[];
-  version: string | null;
+  manifestRelative: string;
   manifestDigest: string | null;
+  requiredIdentity: SourceIdentity;
 }
 
 async function readEvidenceDir(
@@ -404,31 +449,16 @@ async function checkGate(gate: string, context: GateContext): Promise<GateReport
     return { ...missing, receipt: relative, reasons: [receipt.problem ?? `${relative} is not a JSON object`] };
   }
   const json = receipt.json;
-  const reasons: string[] = [];
+  const reasons = verifyGateReceipt(json, context.requiredIdentity).reasons;
   const state = typeof json.state === "string" ? json.state : null;
-  if (state === null) reasons.push(`receipt ${relative} records no state`);
-  else if (state !== "passed") reasons.push(`receipt ${relative} state is "${state}", not "passed"`);
-  const command = typeof json.command === "string" && json.command.trim() !== "" ? json.command : null;
-  if (command === null) reasons.push(`receipt ${relative} does not record the command that produced it`);
+  const command = typeof json.command === "string" ? json.command : null;
 
-  if (json.gate !== undefined && json.gate !== gate) {
+  if (json.gate !== gate) {
     reasons.push(
       `receipt ${relative} declares gate ${JSON.stringify(json.gate)} but is matched for ${JSON.stringify(gate)}`,
     );
   }
-  if (json.manifest_version !== undefined && json.manifest_version !== context.version) {
-    reasons.push(
-      `receipt ${relative} is stale: it records manifest_version ${JSON.stringify(json.manifest_version)} but the manifest is ${JSON.stringify(context.version)}`,
-    );
-  }
-  if (json.manifest_sha256 !== undefined) {
-    const recorded = typeof json.manifest_sha256 === "string" ? json.manifest_sha256.toLowerCase() : null;
-    if (context.manifestDigest === null) {
-      reasons.push(`receipt ${relative} binds the manifest digest but no manifest file was provided`);
-    } else if (recorded !== context.manifestDigest) {
-      reasons.push(`receipt ${relative} is stale: its manifest digest does not match the manifest file`);
-    }
-  }
+  if (json.manifest_path !== context.manifestRelative || json.manifest_sha256 !== context.manifestDigest) reasons.push("receipt does not bind the exact requested manifest; rerun with this selected manifest");
   if (json.artifacts !== undefined) {
     if (!Array.isArray(json.artifacts)) {
       reasons.push(`receipt ${relative} artifacts is not an array`);

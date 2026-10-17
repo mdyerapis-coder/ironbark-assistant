@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 use ironbark_core::contracts::*;
-use ironbark_core::judgments::qualification::{ClassMetrics, EvaluationReportInput, GateVerdict, HoldoutMetrics, LatencyMs, SplitDigests};
+use ironbark_core::judgments::qualification::{ClassMetrics, DomainQualifications, EvaluationReportInput, GateVerdict, HoldoutMetrics, LatencyMs, SplitDigests};
 use ironbark_core::policy::service::ActionOutcome;
 use ironbark_core::connections::webgpt::{WebGptActivationState, WebGptStatus, WebGptSubmissionReceipt, WebGptSubmissionState, WebGptTurnInput, WebGptTurnOutput};
 use ironbark_core::conversations::{ArtifactReceipt, BranchProvenance, BranchView, ConversationExport, ConversationHistory, ConversationSummary, ExportFormat, MessageView, QueuedTurn, RunResolution, TurnDispatch, TurnSnapshot};
@@ -26,7 +26,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         HarnessDescriptor, ProviderProtocol, AuthRef, Capability, ModelDescriptor, ConnectionConfig, ConnectionDescriptor,
         ProviderRole, ProviderToolCall, ProviderMessage, ProviderTurnInput, WorkerProviderTurnInput, BillingObservation,
         BillingState, UsageSource, UsageObservation, ScoreEvidence, JudgmentState, JudgmentInput, JudgmentRecord,
-        CoreEvent, WorkerEvent, EventEnvelope, Project, CoreCommand, CoreReply, ClientFrame, ServerFrame,
+        CoreEvent, WorkerEvent, EventEnvelope, Project, CoreCommand, CoreReply, CommandResult,
+        StatusReport, DoctorReport, ShutdownReceipt, Empty, ClientFrame, ServerFrame,
         ConversationSummary, BranchView, MessageView, BranchProvenance, ConversationHistory, ConversationExport, ExportFormat,
         QueuedTurn, TurnDispatch, TurnSnapshot, ArtifactReceipt, RunResolution,
         ImportSource, ImportFormat, ImportFile, ImportPreview, ImportReceipt, CapacityReport, RetentionReport,
@@ -36,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SourceInput, DisclosurePolicy, SourceRevision, CitationView,
         DeletionScope, DeletionReceipt,
         MemoryCandidate, MemoryDecision, MemoryRecord, EmbeddingModelIdentity, EmbeddingIndexReceipt,
-        JudgmentDomain, QualificationState, QualificationRecord, AdvisoryOutcome,
+        JudgmentDomain, QualificationState, QualificationRecord, DomainQualifications, AdvisoryOutcome,
         EvaluationReportInput, ClassMetrics, SplitDigests, LatencyMs, GateVerdict, HoldoutMetrics,
         // Policy service outcomes referenced by automation receipts.
         ActionOutcome,
@@ -48,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         TargetKind, ScopeRole, ScopePhase,
         ConsentKind, ConsentSource, ConsentRecord);
     // Interfaces describe real worker implementations and import only generated DTOs.
-    output.push_str("\nexport interface HarnessAdapter {\n  describe(): Promise<HarnessDescriptor>;\n  open(input: OpenSessionInput): Promise<SessionRef>;\n  turn(session: SessionRef, input: TurnInput): AsyncIterable<WorkerEvent>;\n  answerPermission(input: PermissionAnswer): Promise<void>;\n  interrupt(session: SessionRef): Promise<void>;\n  exportContext(session: SessionRef): Promise<ContextPackage>;\n  close(session: SessionRef): Promise<void>;\n}\nexport interface ProviderAdapter {\n  describe(connection: ConnectionConfig): Promise<ConnectionDescriptor>;\n  stream(input: WorkerProviderTurnInput, signal: AbortSignal): AsyncIterable<WorkerEvent>;\n}\nexport interface CoreClient {\n  request<T>(command: CoreCommand, requestId?: string): Promise<T>;\n  events(afterSeq: number): AsyncIterable<EventEnvelope>;\n}\n");
+    output.push_str("\nexport interface HarnessAdapter {\n  describe(): Promise<HarnessDescriptor>;\n  open(input: OpenSessionInput): Promise<SessionRef>;\n  turn(session: SessionRef, input: TurnInput): AsyncIterable<WorkerEvent>;\n  answerPermission(input: PermissionAnswer): Promise<void>;\n  interrupt(session: SessionRef): Promise<void>;\n  exportContext(session: SessionRef): Promise<ContextPackage>;\n  close(session: SessionRef): Promise<void>;\n}\nexport interface ProviderAdapter {\n  describe(connection: ConnectionConfig): Promise<ConnectionDescriptor>;\n  stream(input: WorkerProviderTurnInput, signal: AbortSignal): AsyncIterable<WorkerEvent>;\n}\nexport interface CoreClient {\n  request<C extends CoreCommand>(command: C, requestId?: string): Promise<ResultOf<C>>;\n  events(afterSeq: string): AsyncIterable<EventEnvelope>;\n}\n// The typed value of one command's reply: the CommandResult variant whose\n// `command` tag matches the request, unwrapped to its leaf. A result whose tag\n// does not match the request (mismatched or echoed) cannot satisfy this type\n// and is rejected at runtime by packages/contracts/src/validate.ts.\nexport type ResultOf<C extends CoreCommand> = Extract<CommandResult, { command: C[\"type\"] }>[\"value\"];\n");
     fs::write(directory.join("src/generated.ts"), output)?;
     let mut schema = serde_json::to_value(schemars::schema_for!(ContractSchema))?;
     schema.as_object_mut().ok_or("schema root is not an object")?.insert("x-ironbark-protocol".into(), serde_json::json!(1));

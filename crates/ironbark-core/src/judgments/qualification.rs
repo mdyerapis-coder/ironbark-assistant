@@ -87,8 +87,9 @@ pub struct EvaluationReportInput {
     pub confidence_method: String,
     pub holdout: HoldoutMetrics,
     pub latency_ms: LatencyMs,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::contracts::wire::option_i64")]
+    #[schemars(with = "Option<crate::contracts::wire::WireI64Schema>")]
+    #[ts(optional, type = "string")]
     pub evaluated_at: Option<i64>,
 }
 
@@ -103,36 +104,22 @@ pub struct SplitDigests {
 
 // ── Statistics: mirrored from the TS implementation exactly ─────────────────
 
-fn binom_term_log(n: i64, k: i64, p: f64, prev_log: f64) -> f64 {
-    // log C(n,k) p^k (1-p)^(n-k) via the multiplicative recurrence, renormalised.
-    if k == 0 {
-        return n as f64 * p.ln_1p_neg_safe();
-    }
-    let log = prev_log + ((n - k + 1) as f64).ln() - (k as f64).ln() + p.ln() - p.ln_1p_neg_safe();
-    if log < -700.0 { log + 700.0 } else { log }
-}
-
-trait Ln1pNeg { fn ln_1p_neg_safe(self) -> f64; }
-impl Ln1pNeg for f64 {
-    fn ln_1p_neg_safe(self) -> f64 {
-        // ln(1 - p) where 0 < p < 1, via ln1p for precision near p = 0.
-        (-self).ln_1p()
-    }
-}
-
 fn binom_cdf(x: i64, n: i64, p: f64) -> f64 {
     if n <= 0 { return 1.0; }
     if x < 0 { return 0.0; }
     if x >= n || p <= 0.0 { return 1.0; }
     if p >= 1.0 { return if x >= n { 1.0 } else { 0.0 }; }
-    let mut sum = 0.0f64;
-    let mut log_term = 0.0f64;
+    let log_failure = (-p).ln_1p();
+    let mut log_term = n as f64 * log_failure;
+    let mut log_cdf = f64::NEG_INFINITY;
     for k in 0..=x {
-        log_term = binom_term_log(n, k, p, log_term);
-        sum += log_term.exp();
-        if !sum.is_finite() { return 1.0; }
+        if k > 0 {
+            log_term += ((n - k + 1) as f64).ln() - (k as f64).ln() + p.ln() - log_failure;
+        }
+        let max = log_cdf.max(log_term);
+        log_cdf = max + (log_cdf.min(log_term) - max).exp().ln_1p();
     }
-    sum.min(1.0)
+    log_cdf.exp().min(1.0)
 }
 
 /// One-sided 95% Clopper-Pearson upper bound on the binomial failure rate for
@@ -202,7 +189,7 @@ impl QualificationStore {
     pub fn new(store: Store) -> Self { Self { store } }
 
     fn validate(report: &EvaluationReportInput) -> Result<()> {
-        if report.holdout.size < report.holdout.accepted + report.holdout.wrong_accepted + report.holdout.abstained
+        if report.holdout.size < report.holdout.accepted + report.holdout.abstained
             + report.holdout.invalid + report.holdout.unavailable + report.holdout.unqualified {
             return Err(CoreError::new("metrics_inconsistent", "holdout buckets exceed holdout size"));
         }
@@ -427,6 +414,20 @@ mod tests {
     }
 
     #[test]
+    fn error_bounds_match_exact_combinatorial_references() {
+        // Independent Decimal bisection of sum(C(n,k) p^k (1-p)^(n-k)) = 0.05.
+        for (wrong, accepted, reference) in [
+            (177, 200, 0.920114754926111),
+            (112, 200, 0.6192709347928696),
+            (1, 2000, 0.002369713367656844),
+            (1800, 2000, 0.9108444162227793),
+        ] {
+            let actual = binom_upper95(wrong, accepted).unwrap();
+            assert!((actual - reference).abs() < 1e-10, "{wrong}/{accepted}: {actual} != {reference}");
+        }
+    }
+
+    #[test]
     fn gate_enables_only_when_all_conditions_hold() {
         let verdict = gate(&passing_report(JudgmentDomain::TaskIntent, "id-a"));
         assert_eq!(verdict.state, QualificationState::Enabled, "clean report passes: {:?}", verdict.reasons);
@@ -521,6 +522,21 @@ mod tests {
         let listing = qs.list(JudgmentDomain::EvidenceNeeded).await.unwrap();
         assert!(listing.enabled.is_none());
         assert_eq!(listing.blocked.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn wrong_answers_persist_as_blocked_without_double_counting_accepted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&tmp.path().join("core.db")).await.expect("open store");
+        let qs = QualificationStore::new(store);
+        let wrong = report(JudgmentDomain::TaskIntent, "id-a", "id-a", holdout(100, 9, 200));
+
+        let record = qs.enable(wrong, digest("cal")).await.expect("persist measured wrong answers");
+        assert_eq!(record.state, QualificationState::Blocked);
+        assert_eq!(record.acceptance_coverage, 0.5);
+        assert!(record.upper_error_bound > MAX_UPPER_ERROR_BOUND);
+        assert!(qs.current(JudgmentDomain::TaskIntent).await.unwrap().is_none());
+        assert_eq!(qs.list(JudgmentDomain::TaskIntent).await.unwrap().blocked, vec![record]);
     }
 
     #[tokio::test]

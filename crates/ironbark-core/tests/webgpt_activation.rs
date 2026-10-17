@@ -81,7 +81,7 @@ async fn setup() -> Fixture {
     let node = NodeId::new();
     let root_str = root.to_string_lossy().into_owned();
     let policy = serde_json::json!({
-        "version": 1,
+        "version": "1",
         "project_id": project,
         "allowed_connection_ids": ["webgpt"],
         "allowed_tools": [],

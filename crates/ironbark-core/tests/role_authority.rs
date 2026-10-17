@@ -42,7 +42,7 @@ async fn base() -> (Store, tempfile::TempDir, ProjectId) {
 
 fn policy_value(project: ProjectId, tools: &[&str], root: &str, connections: &[&str], local_only: bool) -> ProjectPolicy {
     parse(json!({
-        "version": 1, "project_id": project,
+        "version": "1", "project_id": project,
         "allowed_connection_ids": connections, "allowed_tools": tools,
         "read_roots": [root], "write_roots": [root],
         "network_destinations": [],

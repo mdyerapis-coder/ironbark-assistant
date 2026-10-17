@@ -8,14 +8,14 @@ use clap::{Parser, Subcommand};
 use ironbark_core::{
     conversations::{ExportFormat, RunResolution},
     contracts::{
-        ArtifactId, BranchId, CheckpointPhase, ContentPart, ConversationId, CoreCommand, CoreReply,
-        Digest, HarnessKind, MessageId, ProjectId, ProjectPolicy, RecoveryDecision, ResultManifest,
-        RunId, RoutePin,
+        ArtifactId, BranchId, CheckpointPhase, CommandResult, ContentPart, ConversationId, CoreCommand,
+        CoreReply, Digest, HarnessKind, MessageId, ProjectId, ProjectPolicy, RecoveryDecision,
+        ResultManifest, RunId, RoutePin,
     },
     error::CoreError,
     ipc::CoreClient,
     paths::RuntimePaths,
-    store::{backup::BackupService, imports::{ImportFormat, ImportSource}},
+    store::{backup::BackupService, imports::{ImportFormat, ImportSource}, preflight::MigrationPreflight},
 };
 use std::{io::Write as _, str::FromStr};
 use uuid::Uuid;
@@ -44,6 +44,8 @@ enum Command {
     Artifact { #[command(subcommand)] command: ArtifactCommand },
     /// Snapshot-derived backup and the offline stopped restore.
     Backup { #[command(subcommand)] command: BackupCommand },
+    /// Offline original-preserving recovery image and migration inspection.
+    Migration { #[command(subcommand)] command: MigrationCommand },
     /// Conservative reference-aware CAS retention sweep.
     Retention { #[command(subcommand)] command: RetentionCommand },
     /// Published CAS capacity report.
@@ -97,6 +99,14 @@ enum BackupCommand {
     /// Offline restore into a freshly selected namespace (the current XDG env). Never
     /// authenticates and never overwrites an existing namespace.
     Restore { #[arg(long)] source: std::path::PathBuf, #[arg(long, default_value_t = true)] new_namespace: bool },
+}
+
+#[derive(Subcommand)]
+enum MigrationCommand {
+    /// Copy a stopped source into a new private raw recovery image.
+    Backup { #[arg(long)] destination: std::path::PathBuf },
+    /// Inspect without starting a core; a selected backup must already exist.
+    Preflight { #[arg(long)] backup: Option<std::path::PathBuf> },
 }
 
 #[derive(Subcommand)]
@@ -205,6 +215,21 @@ async fn run() -> Result<(), String> {
         return print_json(&report);
     }
 
+    // Offline preflight never connects, prepares paths, or starts a writable Store.
+    if let Command::Migration { command } = &args.command {
+        return match command {
+            MigrationCommand::Backup { destination } => {
+                let manifest = MigrationPreflight::create_recovery_image(&paths, destination).map_err(|e| e.code)?;
+                print_json(&manifest)
+            }
+            MigrationCommand::Preflight { backup } => {
+                let report = MigrationPreflight::inspect(&paths, backup.as_deref()).map_err(|e| e.code)?;
+                print_json(&report)?;
+                if report.writable_allowed() { Ok(()) } else { Err("migration_preflight_blocked".into()) }
+            }
+        };
+    }
+
     let mut client = CoreClient::connect(&paths).await.map_err(display)?;
     let id = args.request_id.unwrap_or_else(Uuid::new_v4);
 
@@ -213,8 +238,10 @@ async fn run() -> Result<(), String> {
         let mut after = *after;
         loop {
             let reply = client.request(Uuid::new_v4(), CoreCommand::Events { after }).await.map_err(display)?;
-            let value = value(reply).map_err(display)?;
-            let events: Vec<ironbark_core::contracts::EventEnvelope> = serde_json::from_value(value).map_err(display)?;
+            let events = match outcome(reply).map_err(display)? {
+                CommandResult::Events { value } => value,
+                other => return Err(format!("expected events result, got {}", serde_json::to_string(&other).map_err(display)?)),
+            };
             if events.is_empty() { break; }
             for event in events {
                 after = event.seq;
@@ -225,8 +252,8 @@ async fn run() -> Result<(), String> {
     }
 
     let command = args.command.build().map_err(display)?;
-    let reply = client.request(id, command).await.map_err(display)?;
-    emit(&paths, reply).map_err(display)
+    let reply = client.request(id, command.clone()).await.map_err(display)?;
+    emit(&paths, reply, &command).map_err(display)
 }
 
 impl Command {
@@ -263,6 +290,7 @@ impl Command {
             Command::Backup { command: BackupCommand::Restore { .. } } => {
                 return Err("backup restore is offline and does not route through the daemon".into())
             }
+            Command::Migration { .. } => return Err("migration commands are offline and do not route through the daemon".into()),
             Command::Retention { command: RetentionCommand::Sweep } => C::RetentionSweep {},
             Command::ObjectCapacity { project } => C::ObjectCapacity { project_id: project_id(project)? },
             Command::Conversation { command } => command.build()?,
@@ -409,25 +437,27 @@ fn parse_recovery_decision(raw: &str) -> Result<RecoveryDecision, String> {
 }
 
 // `artifact read` returns base64 in the DTO; the raw bytes are what a caller wants on stdout.
-fn emit(_paths: &RuntimePaths, reply: CoreReply) -> Result<(), String> {
-    match reply {
-        CoreReply::Ok { value } => {
-            if let Some(data) = value.get("data").and_then(|d| d.as_str())
-                && value.get("digest").is_some() && value.get("bytes").is_some() {
-                    let bytes = STANDARD.decode(data).map_err(|e| format!("artifact base64: {e}"))?;
-                    let mut out = std::io::stdout().lock();
-                    out.write_all(&bytes).map_err(|e| format!("write artifact bytes: {e}"))?;
-                    out.flush().map_err(|e| format!("flush artifact bytes: {e}"))?;
-                    return Ok(());
-                }
-            println!("{}", serde_json::to_string_pretty(&value).map_err(display)?);
-            Ok(())
+// Every other outcome prints its typed leaf value (the command tag is the request's own).
+fn emit(_paths: &RuntimePaths, reply: CoreReply, command: &CoreCommand) -> Result<(), String> {
+    let result = outcome(reply).map_err(display)?;
+    if let CommandResult::ArtifactRead { value: read } = &result {
+        let bytes = STANDARD.decode(&read.data).map_err(|e| format!("artifact base64: {e}"))?;
+        if bytes.len() as u64 != read.bytes {
+            return Err(format!("artifact byte count differs from its manifest"));
         }
-        CoreReply::Error { code, message, .. } => Err(format!("{code}: {message}")),
+        let mut out = std::io::stdout().lock();
+        out.write_all(&bytes).map_err(|e| format!("write artifact bytes: {e}"))?;
+        out.flush().map_err(|e| format!("flush artifact bytes: {e}"))?;
+        return Ok(());
     }
+    if !matches!(command, CoreCommand::ArtifactRead { .. }) {
+        println!("{}", serde_json::to_string_pretty(&result.leaf_json()).map_err(display)?);
+    }
+    Ok(())
 }
 
-fn value(reply: CoreReply) -> Result<serde_json::Value, CoreError> {
+/// Unwrap the typed `CommandResult` from a reply, surfacing the typed error.
+fn outcome(reply: CoreReply) -> Result<CommandResult, CoreError> {
     match reply {
         CoreReply::Ok { value } => Ok(value),
         CoreReply::Error { code, message, .. } => Err(CoreError::new(&code, message)),

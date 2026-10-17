@@ -48,7 +48,7 @@ fn project_policy(
     allow_unknown_cost: bool,
 ) -> ProjectPolicy {
     serde_json::from_value(json!({
-        "version": version,
+        "version": version.to_string(),
         "project_id": project,
         "allowed_connection_ids": allowed,
         "allowed_tools": [],

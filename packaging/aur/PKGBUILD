@@ -26,10 +26,10 @@ pkgdesc="Standalone workstation assistant: Rust core (SQLite, IPC, policy, conta
 arch=(x86_64)
 url="https://github.com/mdyerapis-coder/ironbark-assistant"
 license=(MIT)
-depends=(glibc bubblewrap)
-# The desktop client is a Tauri application, so the WebKitGTK/JSC development
-# packages are required to build it; without them the package build fails.
-makedepends=(rust desktop-file-utils gtk-update-icon-cache webkit2gtk-4.1 javascriptcoregtk-4.1 librsvg libappindicator-gtk3 openssl)
+depends=(glibc bubblewrap webkit2gtk-4.1)
+# Arch's WebKitGTK package also supplies JavaScriptCore. The desktop does not
+# enable Tauri's optional appindicator tray feature.
+makedepends=(rust desktop-file-utils gtk-update-icon-cache librsvg openssl)
 optdepends=(
     "bun: provider/JEV adapter worker runtime"
 )
@@ -54,11 +54,12 @@ build() {
 
 package() {
     cd "${srcdir}/ironbark-assistant-${pkgver}"
-    install -Dm755 target/release/ironbark-core   -t "${pkgdir}/usr/bin"
-    install -Dm755 target/release/ironbark-cli    -t "${pkgdir}/usr/bin"
-    install -Dm755 target/release/ironbark-desktop -t "${pkgdir}/usr/bin"
+    local release_dir="${CARGO_TARGET_DIR:-target}/release"
+    install -Dm755 "${release_dir}/ironbark-core"   -t "${pkgdir}/usr/bin"
+    install -Dm755 "${release_dir}/ironbark-cli"    -t "${pkgdir}/usr/bin"
+    install -Dm755 "${release_dir}/ironbark-desktop" -t "${pkgdir}/usr/bin"
     # path inside worker namespaces, so the installed name carries the hyphen.
-    install -Dm755 target/release/namespace_bridge "${pkgdir}/opt/ironbark/namespace-bridge"
+    install -Dm755 "${release_dir}/namespace_bridge" "${pkgdir}/opt/ironbark/namespace-bridge"
     install -Dm644 LICENSE  -t "${pkgdir}/usr/share/licenses/${pkgname}"
     install -Dm644 README.md -t "${pkgdir}/usr/share/doc/${pkgname}"
     install -Dm644 packaging/desktop/ironbark-assistant.desktop -t "${pkgdir}/usr/share/applications"

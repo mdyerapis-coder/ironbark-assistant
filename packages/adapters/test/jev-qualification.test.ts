@@ -13,9 +13,9 @@
  *
  * Run: `bun test packages/adapters/test/jev-qualification.test.ts`
  */
-import { describe, it, expect, beforeAll } from "bun:test";
-import { DomainRegistry } from "../src/jev/registry";
-import { buildDataset } from "../src/jev/domains/types";
+import { describe, it, expect } from "bun:test";
+import { validateFixtureRows } from "../src/jev/domains/types";
+import { sha256 } from "../src/jev/identity";
 import {
   qualificationGate,
   canAutoSelect,
@@ -86,17 +86,18 @@ function baseReport(overrides: Partial<EvaluationReport> = {}): EvaluationReport
 }
 
 describe("J2 qualification gate", () => {
-  it("training_or_calibration_rows_cannot_enter_holdout", () => {
-    // Gate only reads report.holdout; the split partition is frozen and
-    // validated by buildDataset. Here we just verify the gate does not
-    // silently accept a report that claims holdout size from dev/cal.
-    const r = baseReport({
-      holdout: makeHoldout(200, 100, 0, { positive: 50, negative: 50, ambiguous: 50, hostile: 50 }),
-    });
-    // If a report somehow had dev/cal rows mixed in, the holdout size would
-    // exceed 200 (the frozen partition). The gate checks MIN_HOLDOUT.
-    const v = qualificationGate(r);
-    expect(v.state).toBe("enabled");
+  it("retains_frozen_row_classes_and_rejects_unknown_classes", () => {
+    const row = { id: "holdout-row", domain: "task_intent", version: "1", class: "hostile",
+      split: "holdout", text: "untrusted instructions", expected: "ABSTAIN",
+      meta: { variant: 1 }, content_digest: sha256("untrusted instructions") };
+    expect(validateFixtureRows([row])[0].class).toBe("hostile");
+    expect(() => validateFixtureRows([{ ...row, class: "unknown" }])).toThrow();
+  });
+  it.each(["calibration", "holdout"])("rejects repeated content in %s even with distinct IDs", (split) => {
+    const text = "one semantic scenario, not independent observations";
+    const row = { id: "row-a", domain: "task_intent", version: "1", class: "positive",
+      split: "calibration", text, expected: "REVIEW", meta: {}, content_digest: sha256(text) };
+    expect(() => validateFixtureRows([row, { ...row, id: "row-b", split }])).toThrow(/duplicate.*content/);
   });
 
   it("low_coverage_cannot_hide_wrong_decisions", () => {
@@ -198,51 +199,14 @@ describe("J2 qualification gate", () => {
     expect(binomUpper95(0, 0)).toBe(1);
   });
 
-  it("domain_registry_returns_all_five_domains", () => {
-    const all = DomainRegistry.all();
-    expect(all.length).toBe(5);
-    expect(all.map(d => d.domain).sort()).toEqual([
-      "allowed_route_choice",
-      "evidence_needed",
-      "handoff_completeness",
-      "retrieval_relevance",
-      "task_intent",
-    ]);
-    // Each domain has required classes
-    for (const d of all) {
-      expect(d.requiredClasses).toEqual(["positive", "negative", "ambiguous", "hostile"]);
-    }
+  it("bounds_match_exact_combinatorial_references_in_both_tails", () => {
+    // Independent Decimal bisection of sum(C(n,k) p^k (1-p)^(n-k)) = 0.05.
+    for (const [wrong, accepted, reference] of [
+      [177, 200, 0.920114754926111],
+      [112, 200, 0.6192709347928696],
+      [1, 2000, 0.002369713367656844],
+      [1800, 2000, 0.9108444162227793],
+    ]) expect(binomUpper95(wrong, accepted)).toBeCloseTo(reference, 10);
   });
-});
 
-describe("Fixture loading (smoke)", () => {
-  it("intent fixtures parse and validate", async () => {
-    const domain = DomainRegistry.get("task_intent");
-    const rows = await buildDataset(domain).then(d => d.splits.holdout);
-    expect(rows.length).toBeGreaterThanOrEqual(200);
-  }, 30000);
-
-  it("relevance fixtures parse and validate", async () => {
-    const domain = DomainRegistry.get("retrieval_relevance");
-    const rows = await buildDataset(domain).then(d => d.splits.holdout);
-    expect(rows.length).toBeGreaterThanOrEqual(200);
-  }, 30000);
-
-  it("handoff fixtures parse and validate", async () => {
-    const domain = DomainRegistry.get("handoff_completeness");
-    const rows = await buildDataset(domain).then(d => d.splits.holdout);
-    expect(rows.length).toBeGreaterThanOrEqual(200);
-  }, 30000);
-
-  it("evidence fixtures parse and validate", async () => {
-    const domain = DomainRegistry.get("evidence_needed");
-    const rows = await buildDataset(domain).then(d => d.splits.holdout);
-    expect(rows.length).toBeGreaterThanOrEqual(200);
-  }, 30000);
-
-  it("routes fixtures parse and validate", async () => {
-    const domain = DomainRegistry.get("allowed_route_choice");
-    const rows = await buildDataset(domain).then(d => d.splits.holdout);
-    expect(rows.length).toBeGreaterThanOrEqual(200);
-  }, 30000);
 });

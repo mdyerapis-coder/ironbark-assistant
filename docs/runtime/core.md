@@ -4,10 +4,11 @@ The native daemon owns SQLite, the authenticated local socket, policy and the se
 dispatcher. The implemented command surface covers C1 project/status/events/doctor/shutdown,
 C5 objects (artifact read, additive import, snapshot backup, offline stopped restore,
 conservative retention, capacity) and P2 conversation-tree operations (create, history,
-rename, search, export, edit, queue turn, regenerate, archive, delete). Run scheduling and
-live provider launch (C4) are not integrated: `run_interrupt` is a deliberate stub and there
-is no `run create`/`checkpoint`/`run inspect` command. Native harnesses, provider accounts,
-JEV semantic qualification and desktop release are not qualified by this core.
+rename, search, export, edit, queue turn, regenerate, archive, delete). Manual `run create`,
+`run start`, checkpoint, inspect and reconcile commands are implemented. Core-owned live
+provider launch and resumable native control remain incomplete: `run_interrupt` returns
+`run_dependency_missing`. Native harnesses, provider accounts, JEV semantic qualification
+and desktop release are not qualified by this core.
 
 ## Build and run
 
@@ -116,6 +117,14 @@ dispatch-claimed), fsynced with a `restore.json` marker, then atomically no-repl
 into the freshly selected namespace. An existing namespace — even one whose core has stopped —
 is refused (`NamespaceExists`). It launches no worker and reacquires no native session.
 
+Schema-1 backup, restore and retention use `store::schema::StorageSchema`. Every durable
+table/column/index and reference variant is reviewed; unknown schema refuses collection
+before unlinking. Only typed owned references root CAS bytes. Human JSON-looking text,
+external file hashes and policy/model identities do not become object references.
+Sanitization preserves control identities and nonsecret raw logprob tokens. Restore
+disables imported work, dispatch, grants, native associations and enrollment/check
+authority; original checkpoint CAS bytes remain historical evidence, not fresh checks.
+
 ## Observed verification
 
 On this workstation the integrated Rust suite and the actual prebuilt daemon/CLI were exercised
@@ -145,9 +154,9 @@ bun qa/smoke/worker-containment.ts
   exact source bytes from a daemon started in the restored namespace, and a second restore
   into an existing namespace was refused with `NamespaceExists`.
 
-This is not a complete application, native harness, provider account, JEV domain or release
-qualification. C4 run scheduling/live provider launch, the live provider/JEV/AlphaCode
-smokes and the `run create`/`checkpoint` CLI commands remain outstanding.
+That historical verification is not complete application, native harness, provider account,
+JEV domain or release qualification. Manual run/checkpoint/inspection CLI operations now
+exist; core-owned live launch, resumable interruption and live qualification remain unfinished.
 
 ## Run scheduling and crash reconciliation (C4)
 
@@ -200,3 +209,18 @@ exactly one JSON DTO on stdout (the core's own DTO — never a re-shaped copy):
 
 The generic escape hatch remains available for anything not yet given a typed
 subcommand: `ironbark-cli command --request-id <uuid> '<CoreCommand JSON>'`.
+
+## Native adapter transport boundary
+
+ACP partial events are delivered while the native turn is active. Denial without a native
+reject option returns cancellation, never an allow option. Interrupt waits for the actual
+native `cancelled` response; a local request is not cancellation evidence. Session control
+checks the complete pinned session identity, including project, cwd, harness and version,
+without trusting mutation of a returned reference.
+
+Only an explicit native `end_turn` is success; missing or unknown reasons, refusal and
+budget exhaustion fail. EOF/error rejects pending native RPC calls rather than allowing
+them to expire as misleading request timeouts. A real isolated ACP executable completed
+two interrupted partial-output turns in one process, then exited on close. This is adapter
+transport evidence only: core `run_interrupt`, private managed bridge, live compatibility,
+native pause/resume and owned partial-artifact persistence are separate acceptance gates.

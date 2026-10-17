@@ -1,6 +1,7 @@
 import { NATIVE_STATE_ROOT, describeExit, runProbe, spawnNativeProcess, type NativeProcess, type SpawnOptions, workerEnv } from './native/process';
 import type { HarnessAdapter } from './types';
 import type { ActionSpec, CapabilityState, CapabilityObservation, ContextPackage, HarnessDescriptor, OpenSessionInput, PermissionAnswer, RunState, SessionRef, TurnInput, WorkerEvent } from '../../../contracts/src/generated';
+import { formatWireI64 } from '../../../contracts/src/wire';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { canonical, checkTurnBudget, contextPrefix, deriveActionSpec, digest, policySandbox, type NativePermissionHost, type NativePermissionRequest } from './native/host';
 import { JsonRpcClient, object, versionFromProbe, type RpcStreamItem } from './native/rpc';
@@ -81,7 +82,7 @@ export class CodexAdapter implements HarnessAdapter {
     const { version, reason } = await this.#probeVersion();
     const state: CapabilityState = version === '' ? 'unavailable' : 'unqualified';
     const implementation = version === '' ? `unavailable:${reason.slice(0, 120)}` : `probed:codex-cli ${version}`;
-    const observation = (name: string): CapabilityObservation => ({ name, state, implementation_version: implementation, observed_at: Date.now() });
+    const observation = (name: string): CapabilityObservation => ({ name, state, implementation_version: implementation, observed_at: formatWireI64(BigInt(Date.now())) });
     return {
       harness: 'codex',
       version,

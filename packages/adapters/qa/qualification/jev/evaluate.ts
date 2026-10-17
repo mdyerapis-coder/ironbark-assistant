@@ -101,10 +101,9 @@ interface RowOutcome {
   chosen: string | null;
 }
 
-async function runRow(client: JevClient, domain: DomainDefinition, row: FixtureRow, expected: string, identityMatch: boolean): Promise<RowOutcome> {
-  if (!identityMatch) {
-    // Identity mismatch: the runtime is not the claimed/qualified identity, so
-    // neither the runtime nor the row can produce qualification evidence.
+async function runRow(client: JevClient, domain: DomainDefinition, row: FixtureRow, expected: string, claimedDigest: string | null): Promise<RowOutcome> {
+  if (!claimedDigest) {
+    // An unobserved identity cannot produce qualification evidence.
     return { row, state: "unqualified", latency_ms: 0, chosen: null };
   }
   const candidates = domain.rowCandidates ? domain.rowCandidates(row) : domain.candidates;
@@ -126,6 +125,8 @@ async function runRow(client: JevClient, domain: DomainDefinition, row: FixtureR
   const record = await client.judge(input, new AbortController().signal).catch(() => null);
   const latency_ms = Date.now() - t0;
   if (record === null) return { row, state: "unavailable", latency_ms, chosen: null };
+  if (record.state === "available" && record.runtime_identity_digest !== claimedDigest)
+    return { row, state: "unqualified", latency_ms, chosen: null };
   // `available`, `abstain`, `invalid`, `unavailable` and `unqualified` stay
   // distinct: no state collapses into another and none becomes a choice.
   switch (record.state) {
@@ -233,8 +234,8 @@ function buildReport(
     confidence_method: "none",
     holdout: { ...metrics, by_class },
     latency_ms: latencyMetrics(latencies),
-    // `evaluated_at` is a bigint on the wire and JSON.stringify rejects bigint;
-    // the core stamps its own evaluated_at when the field is absent.
+    // `evaluated_at` is a signed wire decimal string; the core stamps its own
+    // evaluated_at when the field is absent.
   };
   const gate_input: DomainEvaluationReport = {
     domain: domain.domain,
@@ -297,19 +298,19 @@ async function main(): Promise<void> {
     const identityMatch = observedIdentity !== null && observedIdentity.digest === claimedDigest;
     const outcomes: RowOutcome[] = [];
     for (const row of holdoutRows) {
-      outcomes.push(await runRow(client, domain, row, row.expected, identityMatch));
+      outcomes.push(await runRow(client, domain, row, row.expected, identityMatch ? claimedDigest : null));
     }
 
     const { report, gate_input } = buildReport(domain, holdoutRows, outcomes, dataset, observedIdentity, claimedDigest);
     const verdict: GateVerdict = qualificationGate(gate_input);
-    const autoSelect = canAutoSelect(gate_input, {
-      dataset_digest: report.dataset_digest,
-      identity_digest: report.observed_identity_digest,
-    });
+    // No fitted selection rule is loaded or applied by this evaluator.
+    // Report identity fields are not a calibration artifact.
+    const autoSelect = canAutoSelect(gate_input, null);
 
     // Output one JSON line per domain: the canonical report plus the locally
     // re-derived verdict (the core re-derives and persists its own).
-    const out = { domain: domain.domain, state: verdict.state, reasons: verdict.reasons, auto_select: autoSelect, report };
+    const out = { domain: domain.domain, state: verdict.state, reasons: verdict.reasons, auto_select: autoSelect, report,
+      rows: outcomes.map(({ row, ...outcome }) => ({ id: row.id, class: row.class, expected: row.expected, ...outcome })) };
     stdout.write(JSON.stringify(out) + "\n");
 
     if (verdict.state !== "enabled" && verdict.state !== "blocked") allOk = false;

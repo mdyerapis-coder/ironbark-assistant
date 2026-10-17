@@ -43,7 +43,7 @@ struct Fixture {
 
 fn policy_value(project: ProjectId, max_workers: u16, max_requests: u32, max_cost_microusd: Option<u64>, allow_unknown_cost: bool) -> ProjectPolicy {
     serde_json::from_value(json!({
-        "version": POLICY_VERSION,
+        "version": POLICY_VERSION.to_string(),
         "project_id": project,
         "allowed_connection_ids": ["local", "local-alt"],
         "allowed_tools": ["file_write", "integration", "file_read"],
@@ -53,7 +53,7 @@ fn policy_value(project: ProjectId, max_workers: u16, max_requests: u32, max_cos
         "local_only": true,
         "max_workers": max_workers,
         "max_requests": max_requests,
-        "max_cost_microusd": max_cost_microusd,
+        "max_cost_microusd": max_cost_microusd.map(|value| value.to_string()),
         "spend_policy": "paid_allowed",
         "allow_unknown_cost": allow_unknown_cost,
     }))

@@ -15,7 +15,11 @@ export class FrameQueue {
     if (this.#closed) return;
     const waiter = this.#waiters.shift();
     if (waiter) { waiter.resolve(frame); return; }
-    if (this.#items.length >= 4_096) return;
+    if (this.#items.length >= 4_096) {
+      this.#items.length = 0;
+      this.close('rpc_queue_overflow');
+      throw new Error('rpc_queue_overflow');
+    }
     this.#items.push(frame);
   }
   close(reason: string): void {
@@ -23,18 +27,31 @@ export class FrameQueue {
     this.#closed = { reason };
     for (const waiter of this.#waiters.splice(0)) waiter.reject(new Error(reason));
   }
-  async take(timeoutMs: number): Promise<RpcStreamItem> {
+  async take(timeoutMs: number, signal?: AbortSignal): Promise<RpcStreamItem> {
+    signal?.throwIfAborted();
     const item = this.#items.shift();
     if (item) return item;
     if (this.#closed) throw new Error(this.#closed.reason);
     const { promise, resolve, reject } = Promise.withResolvers<RpcStreamItem>();
-    this.#waiters.push({ resolve, reject });
+    const waiter = { resolve, reject };
+    this.#waiters.push(waiter);
+    const abort = () => {
+      const index = this.#waiters.indexOf(waiter);
+      if (index !== -1) {
+        this.#waiters.splice(index, 1);
+        reject(signal?.reason ?? new Error('rpc_read_aborted'));
+      }
+    };
+    signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => {
-      const index = this.#waiters.findIndex(waiter => waiter.resolve === resolve);
+      const index = this.#waiters.indexOf(waiter);
       if (index !== -1) { this.#waiters.splice(index, 1); reject(new Error('rpc_request_timeout')); }
     }, timeoutMs);
     timer.unref?.();
-    try { return await promise; } finally { clearTimeout(timer); }
+    try { return await promise; } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    }
   }
   get closedReason(): string | undefined { return this.#closed?.reason; }
 }
@@ -57,6 +74,16 @@ export class JsonRpcClient {
   readonly queue = new FrameQueue();
   #process: NativeProcess;
   #reader: Promise<void>;
+  #failure?: Error;
+  #fail(reason: string): void {
+    this.#failure ??= new Error(reason);
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(this.#failure);
+    }
+    this.#pending.clear();
+    this.queue.close(reason);
+  }
 
   constructor(process: NativeProcess) {
     this.#process = process;
@@ -93,12 +120,13 @@ export class JsonRpcClient {
         // Non-RPC frame (e.g. a bare log line): surface as a notification with an empty method.
         this.queue.push({ kind: 'notification', method: '', params: frame });
       }
-      this.queue.close('native_stream_closed');
-    })().catch(error => {
-      this.queue.close(error instanceof Error ? error.message : 'native_stream_error');
+      this.#fail('native_stream_closed');
+    })().catch(() => {
+      this.#fail('native_stream_error');
     });
   }
   request(method: string, params: unknown, timeoutMs = 15_000): Promise<unknown> {
+    if (this.#failure) return Promise.reject(this.#failure);
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
     const id = ++this.#nextId;
     const timer = setTimeout(() => {
@@ -126,12 +154,7 @@ export class JsonRpcClient {
     await this.#process.writeFrame({ jsonrpc: '2.0', id, error: { code, message } });
   }
   async close(): Promise<void> {
-    for (const pending of [...this.#pending.values()]) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error('rpc_closed'));
-    }
-    this.#pending.clear();
-    this.queue.close('rpc_closed');
+    this.#fail('rpc_closed');
     await this.#process.kill(false);
     await this.#reader.catch(() => undefined);
   }

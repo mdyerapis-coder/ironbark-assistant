@@ -162,7 +162,7 @@ pub struct WebGptSubmissionReceipt {
     pub image_digests: Vec<Digest>,
     /// The prompt text (all text parts, in order), kept for the audit trail.
     pub prompt_text: String,
-    #[ts(type = "number")]
+    #[serde(with = "crate::contracts::wire::i64")] #[schemars(with = "crate::contracts::wire::WireI64Schema")] #[ts(type = "string")]
     pub timestamp: i64,
     /// Set on a superseded view: the digest of the resubmit receipt.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -210,7 +210,7 @@ pub struct WebGptTurnOutput {
     pub response_text: String,
     pub sidecar_version: String,
     pub profile_digest: Digest,
-    #[ts(type = "number")]
+    #[serde(with = "crate::contracts::wire::i64")] #[schemars(with = "crate::contracts::wire::WireI64Schema")] #[ts(type = "string")]
     pub timestamp: i64,
 }
 

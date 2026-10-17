@@ -130,7 +130,23 @@ impl ApprovalService {
     /// before calling this. A frontend-supplied digest is not an observation.
     /// Commit consumption BEFORE the side effect: crash/disconnect never re-arms it.
     pub async fn consume(&self, action: ActionSpec, grant_id: GrantId, observed_state: Digest, now: i64) -> Result<ConsumptionReceipt> {
+        self.consume_inner(action, grant_id, observed_state, now, false).await
+    }
+    /// Same as [`Self::consume`], but the bound run must still be `running`
+    /// for this project in the transaction that sets `consumed_at`.
+    pub async fn consume_while_running(&self, action: ActionSpec, grant_id: GrantId, observed_state: Digest, now: i64) -> Result<ConsumptionReceipt> {
+        self.consume_inner(action, grant_id, observed_state, now, true).await
+    }
+    async fn consume_inner(&self, action: ActionSpec, grant_id: GrantId, observed_state: Digest, now: i64, require_running: bool) -> Result<ConsumptionReceipt> {
         self.store.with_transaction(move |tx| {
+            if require_running {
+                let bound: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM runs r JOIN nodes n ON n.id=r.node_id JOIN jobs j ON j.id=n.job_id WHERE r.id=?1 AND r.state='running' AND j.project_id=?2",
+                    params![action.run_id.to_string(), action.project_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                if bound != 1 { return Err(CoreError::new("stale_grant", "Bound run is not running")); }
+            }
             let (stored, state) = stored_action(tx, action.id)?;
             if stored != action || state != "approved" || observed_state != action.expected_state_digest {
                 return Err(CoreError::new("stale_grant", "Action or observed resource state changed"));

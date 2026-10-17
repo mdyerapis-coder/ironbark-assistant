@@ -112,7 +112,7 @@ fn document_action(
             "parameters": parameters,
         },
         "scope": { "tools": ["desktop"], "paths": [] },
-        "policy_version": 1,
+        "policy_version": "1",
         "expected_state_digest": digest,
     }))
     .unwrap()
@@ -213,9 +213,9 @@ async fn an_unapproved_grant_cannot_execute() {
         "id": GrantId::new(),
         "action_id": action.id,
         "action_digest": action.digest().unwrap(),
-        "policy_version": 1,
+        "policy_version": "1",
         "expected_state_digest": observed.revision_digest,
-        "expires_at": now_ms() + 3_600_000,
+        "expires_at": (now_ms() + 3_600_000).to_string(),
         "revoked_at": null,
     }))
     .unwrap();

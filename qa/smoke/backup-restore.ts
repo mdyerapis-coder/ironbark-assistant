@@ -4,6 +4,7 @@ import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Subprocess } from "bun";
+import { Database } from "bun:sqlite";
 import type { BackupManifest, ImportPreview, ImportReceipt, RecoveryReport, RestoreReport, RunReceipt } from "../../packages/contracts/src/generated";
 
 // Exercises actual future canonical CLI operations. Unsupported commands fail;
@@ -41,7 +42,7 @@ async function command(env: SmokeEnvironment, args: string[], expectedCode = 0):
   try {
     const [stdout, stderr, code] = await deadline(Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]));
     if (expectedCode === 0) assert.equal(code, 0, `${args.join(" ")}: ${stderr}`);
-    else { assert.notEqual(code, 0, "negative restore unexpectedly succeeded"); assert.match(stderr + Buffer.from(stdout).toString(), new RegExp(expectedCode === 1 ? "IntegrityMismatch" : "NamespaceExists")); }
+    else { assert.notEqual(code, 0, "negative restore unexpectedly succeeded"); assert.match(stderr + Buffer.from(stdout).toString(), new RegExp(expectedCode === 1 ? "IntegrityMismatch" : expectedCode === 2 ? "NamespaceExists" : "UnknownBackupSchema")); }
     return Buffer.from(stdout);
   } finally { if (child.exitCode === null) { child.kill("SIGKILL"); await child.exited; } }
 }
@@ -133,8 +134,22 @@ try {
     const env = environment(`rejected-${mode}`); await command(env, ["backup", "restore", "--source", broken, "--new-namespace"], 1);
     assert(!(await exists(data(env)))); assert(!(await exists(runtime(env))));
   }
+  const unknownBackup = join(temp, "backup-unknown-schema");
+  await cp(backup, unknownBackup, { recursive: true });
+  const unknownDatabase = join(unknownBackup, "core.sqlite3");
+  const unreviewed = new Database(unknownDatabase);
+  try { unreviewed.exec("CREATE TABLE future_object_references(id TEXT PRIMARY KEY, body TEXT NOT NULL)"); }
+  finally { unreviewed.close(); }
+  const unknownBytes = await readFile(unknownDatabase);
+  const unknownManifest = { ...manifest, database_digest: sha256(unknownBytes), database_bytes: unknownBytes.length };
+  await writeFile(join(unknownBackup, "manifest.json"), JSON.stringify(unknownManifest));
+  const unknownEnv = environment("rejected-schema");
+  await command(unknownEnv, ["backup", "restore", "--source", unknownBackup, "--new-namespace"], 3);
+  assert(!(await exists(data(unknownEnv))));
+  assert(!(await exists(runtime(unknownEnv))));
+  assert.equal(sha256(await readFile(unknownDatabase)), unknownManifest.database_digest);
   await stop(originalEnv, daemon); daemon = undefined;
-  console.log(JSON.stringify({ source_hash: sha256(sourceBytes), checkpoint_hash: sha256(checkpointBytes), manifest_objects: manifest.objects.length, restored_runs: "blocked", secret_sentinel: "absent", native_target: "untouched", corrupt_and_missing: "rejected before install", sqlite_integrity: doctor.sqlite_integrity, native_workers: "none observed" }));
+  console.log(JSON.stringify({ source_hash: sha256(sourceBytes), checkpoint_hash: sha256(checkpointBytes), manifest_objects: manifest.objects.length, restored_runs: "blocked", secret_sentinel: "absent", native_target: "untouched", corrupt_and_missing: "rejected before install", unknown_schema: "rejected before install with input unchanged", sqlite_integrity: doctor.sqlite_integrity, native_workers: "none observed" }));
 } finally {
   for (const child of [daemon, restoredDaemon]) if (child && child.exitCode === null) { child.kill("SIGINT"); try { await deadline(child.exited, 5000); } catch { child.kill("SIGKILL"); await child.exited; } }
   await rm(temp, { recursive: true, force: true });

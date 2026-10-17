@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,7 +12,7 @@ import type { HarnessKind, OpenSessionInput, SessionRef, TurnInput, WorkerEvent 
 // records its own argv and stdio to files, so the assertions below observe the
 // process's real bytes rather than mock-internal call counts.
 const DOUBLE_SOURCE = `#!/usr/bin/env bun
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, watch, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
@@ -23,6 +23,7 @@ const deniedPath = join(dir, 'denied-file');
 const log = (line) => appendFileSync(logPath, line + '\\n');
 
 const config = JSON.parse(readFileSync(join(dir, 'double-config.json'), 'utf8'));
+const terminalResult = config.terminalReason === null ? {} : { stopReason: config.terminalReason ?? 'end_turn' };
 const argv = process.argv.slice(2);
 log('INVOKE ' + argv.join(' '));
 
@@ -55,7 +56,7 @@ rl.on('line', (line) => {
       } else {
         log('TOOL_DENIED');
       }
-      if (promptId !== null) { emit({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } }); promptId = null; }
+      if (promptId !== null) { emit({ jsonrpc: '2.0', id: promptId, result: terminalResult }); promptId = null; }
     }
     return;
   }
@@ -75,24 +76,42 @@ rl.on('line', (line) => {
       promptId = msg.id;
       log('PROMPT_RECEIVED');
       log('PROMPT ' + JSON.stringify(msg.params?.prompt ?? null));
-      if (config.permission === false) { emit({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } }); promptId = null; return; }
+      if (config.streamHeld) {
+        emit({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: nativeId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial-before-stop' } } } });
+        log('UPDATE_SENT');
+        return;
+      }
+      if (config.permission === false) { emit({ jsonrpc: '2.0', id: msg.id, result: terminalResult }); promptId = null; return; }
       log('PERMISSION_REQUEST_SENT');
       emit({ jsonrpc: '2.0', id: permissionId, method: 'session/request_permission', params: {
         sessionId: nativeId,
         toolCall: { toolCallId: 'tc-1', name: 'write', kind: 'edit', title: 'write sentinel file' },
-        options: [ { optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' }, { optionId: 'reject-once', kind: 'reject_once', name: 'Reject' } ],
+        options: [ { optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' },
+          ...(config.rejectOption === false ? [] : [{ optionId: 'reject-once', kind: 'reject_once', name: 'Reject' }]) ],
       } });
       return;
-    case 'session/cancel':
-      if (promptId !== null) { emit({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'cancelled' } }); promptId = null; }
+    case 'session/cancel': {
+      log('CANCEL_RECEIVED');
+      const finish = () => {
+        if (promptId !== null) { emit({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'cancelled' } }); promptId = null; }
+      };
+      if (config.cancelAckGate && !existsSync(join(dir, 'cancel-release'))) {
+        const watcher = watch(dir, () => {
+          if (existsSync(join(dir, 'cancel-release'))) { watcher.close(); finish(); }
+        });
+        if (existsSync(join(dir, 'cancel-release'))) { watcher.close(); finish(); }
+      } else finish();
       return;
+    }
     default:
       if (msg.id !== undefined) emit({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'method_not_found' } });
   }
 });
 `;
 
-type DoubleConfig = { version?: string; nativeId?: string; models?: string[]; permission?: boolean; agentVersion?: string };
+type DoubleConfig = { version?: string; nativeId?: string; models?: string[]; permission?: boolean; agentVersion?: string;
+  streamHeld?: boolean; rejectOption?: boolean; cancelAckGate?: boolean; terminalReason?: string | null };
 
 type Double = { dir: string; binary: string; stateDir: string; deniedFile: string };
 
@@ -183,7 +202,110 @@ async function openSession(adapter: OpenCodeAdapter, sessionInput: OpenSessionIn
   return ref;
 }
 
+async function waitForNativeMarker(double: Double, marker: string): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const observe = () => {
+    if (readDoubleLog(double).includes(marker)) { watcher.close(); resolve(); }
+  };
+  const watcher = watch(double.dir, observe);
+  cleanups.push(() => watcher.close());
+  observe();
+  await promise;
+}
+
 describe('opencode native session', () => {
+  it.each([
+    { project_id: 'foreign-project' },
+    { cwd: '/foreign-workspace' },
+    { harness: 'hermes' as const },
+    { native_version: 'unobserved-version' },
+  ])('foreign_session_identity_cannot_cancel_the_owned_native_turn: %j', async changed => {
+    const double = makeDouble({ streamHeld: true });
+    const adapter = adapterFor(double);
+    const sessionInput = input('opencode');
+    const ref = await openSession(adapter, sessionInput);
+    const iterator = adapter.turn(ref, turn(sessionInput))[Symbol.asyncIterator]();
+    expect((await iterator.next()).value?.payload.type).toBe('turn_started');
+    await expect(adapter.interrupt({ ...ref, ...changed })).rejects.toThrow('SessionIdentityMismatch');
+    expect(readDoubleLog(double)).not.toContain('CANCEL_RECEIVED');
+    await adapter.interrupt(ref);
+    while (!(await iterator.next()).done) { /* Drain the actual terminal observation. */ }
+  });
+
+  it('mutating_the_returned_reference_cannot_rebind_native_session_authority', async () => {
+    const double = makeDouble({ streamHeld: true });
+    const adapter = adapterFor(double);
+    const sessionInput = input('opencode');
+    const ref = await openSession(adapter, sessionInput);
+    const iterator = adapter.turn(ref, turn(sessionInput))[Symbol.asyncIterator]();
+    expect((await iterator.next()).value?.payload.type).toBe('turn_started');
+    const project = ref.project_id;
+    ref.project_id = 'foreign-project';
+    try {
+      await expect(adapter.interrupt(ref)).rejects.toThrow('SessionIdentityMismatch');
+      expect(readDoubleLog(double)).not.toContain('CANCEL_RECEIVED');
+    } finally { ref.project_id = project; }
+    await adapter.interrupt(ref);
+    while (!(await iterator.next()).done) { /* Drain the actual terminal observation. */ }
+  });
+
+  it.each([null, 'invented_success', 'refusal', 'max_tokens', 'max_turn_requests'])('a_non_success_native_completion_never_becomes_success: %s', async terminalReason => {
+    const double = makeDouble({ permission: false, terminalReason });
+    const adapter = adapterFor(double);
+    const sessionInput = input('opencode');
+    const ref = await openSession(adapter, sessionInput);
+    const terminal = (await runTurn(adapter, ref, sessionInput)).at(-1)?.payload;
+    expect(terminal?.type).toBe('turn_finished');
+    if (terminal?.type === 'turn_finished') expect(terminal.status).toBe('failed');
+  });
+
+  it('denial_without_a_reject_option_cancels_instead_of_selecting_allow', async () => {
+    const double = makeDouble({ rejectOption: false });
+    const adapter = adapterFor(double);
+    const sessionInput = input('opencode');
+    const ref = await openSession(adapter, sessionInput);
+    await runTurn(adapter, ref, sessionInput);
+    expect(existsSync(double.deniedFile)).toBe(false);
+    expect(readDoubleLog(double)).toContain('PERMISSION_RESULT cancelled:none');
+  });
+
+  it('partial_output_is_observable_while_the_native_turn_is_still_running', async () => {
+    const double = makeDouble({ streamHeld: true });
+    const adapter = adapterFor(double);
+    const sessionInput = input('opencode');
+    const ref = await openSession(adapter, sessionInput);
+    const iterator = adapter.turn(ref, turn(sessionInput))[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.value?.payload.type).toBe('turn_started');
+    const partial = await iterator.next();
+    expect(partial.value?.payload).toEqual({ type: 'text_delta', message_id: 'msg-1', delta: 'partial-before-stop' });
+    expect(readDoubleLog(double)).not.toContain('CANCEL_RECEIVED');
+    await adapter.interrupt(ref);
+    const terminal = await iterator.next();
+    expect(terminal.value?.payload.type).toBe('turn_finished');
+    if (terminal.value?.payload.type === 'turn_finished') expect(terminal.value.payload.status).toBe('cancelled');
+  });
+
+  it('interrupt_waits_for_the_observed_native_cancel_response', async () => {
+    const double = makeDouble({ streamHeld: true, cancelAckGate: true });
+    const adapter = adapterFor(double);
+    const sessionInput = input('opencode');
+    const ref = await openSession(adapter, sessionInput);
+    const events = runTurn(adapter, ref, sessionInput);
+    await waitForNativeMarker(double, 'UPDATE_SENT');
+    let settled = false;
+    const stopping = adapter.interrupt(ref).then(() => { settled = true; });
+    try {
+      await waitForNativeMarker(double, 'CANCEL_RECEIVED');
+      expect(settled).toBe(false);
+    } finally { writeFileSync(join(double.dir, 'cancel-release'), 'release'); }
+    await stopping;
+    const terminal = (await events).at(-1)?.payload;
+    expect(terminal?.type).toBe('turn_finished');
+    if (terminal?.type === 'turn_finished') expect(terminal.status).toBe('cancelled');
+    expect(readDoubleLog(double)).not.toContain('SESSION_RESUME');
+  });
+
   it('permission_denial_precedes_tool_execution', async () => {
     const double = makeDouble();
     const adapter = adapterFor(double);

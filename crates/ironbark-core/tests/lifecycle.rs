@@ -132,7 +132,7 @@ fn status_command_returns_expected_fields() {
     assert!(out.status.success(), "cli status failed: {}", String::from_utf8_lossy(&out.stderr));
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).expect("status prints one JSON DTO");
     assert_eq!(status.get("protocol").and_then(|v| v.as_i64()), Some(1));
-    assert_eq!(status.get("projects").and_then(|v| v.as_i64()), Some(0), "an empty store reports zero projects");
+    assert_eq!(status.get("projects").and_then(|v| v.as_str()), Some("0"), "an empty store reports zero projects on the exact decimal wire");
     assert!(status.get("abandoned_requests").is_some(), "status reports abandoned-request accounting");
 
     // The client disconnecting (window close) must not stop the daemon: a second

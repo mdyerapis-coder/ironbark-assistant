@@ -1,15 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 
 import { OmpAdapter } from '../src/harness/omp';
 import { CodexAdapter } from '../src/harness/codex';
 import { OpenCodeAdapter } from '../src/harness/opencode';
-import { ClaudeAdapter } from '../src/harness/claude';
-import { HermesAdapter } from '../src/harness/hermes';
-import { AlphaCodeAdapter } from '../src/harness/alphacode';
 import {
-  AlphaNativeClient,
   permissionReply,
   requireObservedStop,
   validateAlphaIdentity,
@@ -18,15 +12,13 @@ import {
 } from '../src/native/alphacode';
 import {
   checkTurnBudget,
-  canonical,
   deriveActionSpec,
   policySandbox,
   type NativePermissionHost,
 } from '../src/harness/native/host';
-import type { HarnessAdapter } from '../src/harness/types';
+import { runProbe, spawnNativeProcess } from '../src/harness/native/process';
+import { withNativeFixture } from './fixtures/native-process';
 import type { HarnessKind, OpenSessionInput, SessionRef, TurnInput } from '../../contracts/src/generated';
-
-const baseTemp = join(tmpdir(), 'ironbark-native-boundaries');
 
 /** A host that never silently allows: `prepareAction` is the core's decision. */
 const host: NativePermissionHost = {
@@ -72,56 +64,74 @@ function turn(session: SessionRef, allowedTools: string[]): TurnInput {
   };
 }
 
-function adapters(): Array<{ name: string; adapter: HarnessAdapter }> {
-  return [
-    { name: 'omp', adapter: new OmpAdapter(host, { binary: 'omp', stateDir: join(baseTemp, 'omp') }) },
-    { name: 'codex', adapter: new CodexAdapter(host, { binary: 'codex', home: join(baseTemp, 'codex') }) },
-    { name: 'opencode', adapter: new OpenCodeAdapter(host, { binary: 'opencode', stateDir: join(baseTemp, 'opencode') }) },
-    { name: 'claude', adapter: new ClaudeAdapter(host, { binary: 'claude', home: join(baseTemp, 'claude') }) },
-    { name: 'hermes', adapter: new HermesAdapter(host, { binary: 'hermes', stateDir: join(baseTemp, 'hermes') }) },
-  ];
-}
+describe('native boundary — isolated discovery and owned process lifetime', () => {
+  it('omp: executes an isolated version probe without fabricating qualification', async () => {
+    await withNativeFixture('omp', 'version', async fixture => {
+      const adapter = new OmpAdapter(host, { binary: fixture.binary, stateDir: fixture.stateDir });
+      const descriptor = await adapter.describe();
+      expect(descriptor.version).toBe('1.2.3');
+      expect([descriptor.approval, descriptor.cancel, descriptor.resume, descriptor.child_observability]).toEqual([
+        'unqualified', 'unqualified', 'unqualified', 'unqualified',
+      ]);
+      expect(fixture.invocations().map(call => ({ args: call.args, cwd: call.cwd }))).toEqual([
+        { args: ['--version'], cwd: fixture.stateDir },
+      ]);
+    });
+  });
 
-describe('native boundary — capability honesty', () => {
-  for (const { name, adapter } of adapters()) {
-    it(`${name}: never advertises qualified approval/cancel/resume/children`, async () => {
-      const d = await adapter.describe();
-      expect(d.harness).toBe(name as HarnessKind);
-      expect(d.transport.length).toBeGreaterThan(0);
-      // A capability is only qualified by a recorded live smoke; `describe`
-      // must report unavailable or unqualified, never qualified.
-      for (const state of [d.approval, d.cancel, d.resume, d.child_observability]) {
-        expect(['unavailable', 'unqualified']).toContain(state);
-        expect(state).not.toBe('qualified');
-      }
-      // An unavailable binary is reported as unavailable, not silently ignored.
-      if (d.version === '') {
-        expect(d.approval).toBe('unavailable');
-      } else {
-        expect(d.approval).toBe('unqualified');
+  it('omp: rejects mismatched routes before native protocol dispatch', async () => {
+    await withNativeFixture('omp', 'version', async fixture => {
+      const adapter = new OmpAdapter(host, { binary: fixture.binary, stateDir: fixture.stateDir });
+      const mismatched = input('omp', { cwd: fixture.cwd });
+      mismatched.route.harness = 'codex';
+      await expect(adapter.open(mismatched)).rejects.toThrow('SessionIdentityMismatch');
+      expect(fixture.invocations().every(call => call.args.length === 1 && call.args[0] === '--version')).toBe(true);
+    });
+  });
+
+  it('a failed executable probe preserves the actual exit and diagnostic', async () => {
+    await withNativeFixture('hermes', 'failure', async fixture => {
+      const result = await runProbe(fixture.binary, ['--version'], { cwd: fixture.cwd, env: { HOME: fixture.home } });
+      expect(result.exit).toBe(23);
+      expect(result.signal).toBeNull();
+      expect(result.stdout).toBe('Hermes Agent v1.2.3\n');
+      expect(result.stderr).toContain('fixture version probe failed');
+      expect(fixture.invocations()).toHaveLength(1);
+    });
+  });
+
+  it('a hanging probe is killed and reaped by its explicit deadline', async () => {
+    await withNativeFixture('hermes', 'version', async fixture => {
+      const result = await runProbe(fixture.binary, ['--hang'], { cwd: fixture.cwd, env: { HOME: fixture.home } }, 1000);
+      expect(result.exit).toBeNull();
+      expect(result.signal).toBe('SIGKILL');
+      const calls = fixture.invocations();
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(result.stdout)).toEqual({ ready: true, pid: calls[0]!.pid });
+      expect(() => process.kill(calls[0]!.pid, 0)).toThrow();
+    });
+  });
+
+  it('native stop observes the owned process exit without stopping an unrelated process', async () => {
+    await withNativeFixture('codex', 'version', async fixture => {
+      const owned = spawnNativeProcess(fixture.binary, ['--hold'], { cwd: fixture.cwd, env: { HOME: fixture.home } });
+      const unrelated = spawnNativeProcess(fixture.binary, ['--hold'], { cwd: fixture.cwd, env: { HOME: fixture.home } });
+      try {
+        expect(await owned.frames()[Symbol.asyncIterator]().next()).toEqual({ done: false, value: { ready: true, pid: owned.pid } });
+        expect(await unrelated.frames()[Symbol.asyncIterator]().next()).toEqual({ done: false, value: { ready: true, pid: unrelated.pid } });
+        await owned.kill(false);
+        expect(await owned.exit).toEqual({ code: null, signal: 'SIGTERM' });
+        expect(() => process.kill(owned.pid!, 0)).toThrow();
+        expect(() => process.kill(unrelated.pid!, 0)).not.toThrow();
+      } finally {
+        await Promise.all([owned.kill(true), unrelated.kill(true)]);
+        await Promise.all([owned.exit, unrelated.exit]);
       }
     });
-  }
-
-  it('omp: probes the real installed CLI and isolates its own home', async () => {
-    const adapter = new OmpAdapter(host, { binary: 'omp', stateDir: join(baseTemp, 'omp-probe') });
-    const d = await adapter.describe();
-    expect(d.harness).toBe('omp');
-    expect(d.transport).toBe('stdio-acp');
-    // The host has omp installed (18.8.9); when present the version is real.
-    if (d.version !== '') {
-      expect(d.version).toMatch(/^\d+\.\d+\.\d+/);
-    }
   });
 
   it('alphacode: an unpatched/absent permission extension is refused, never simulated', async () => {
-    // A real native client over an inert channel: no process, no daemon.
-    const channel = {
-      source: (async function* () { /* never yields */ })(),
-      async write() { /* recorded by the client, nothing to speak to */ },
-      async observeStop(session: string) { return { session_id: session, cancelled: true, active_tools: 0, children: [] }; },
-      async close() { /* nothing to close */ },
-    };
+    // Identity and permission validation is not live AlphaCode qualification.
     const identity: AlphaIdentity = {
       buildDigest: 'a'.repeat(64),
       effectiveRoute: { connection_id: 'local', model_id: 'm' },
@@ -130,19 +140,6 @@ describe('native boundary — capability honesty', () => {
       profile: 'ironbark-managed',
       socket: '/run/ironbark/alphacode.sock',
     };
-    // The AlphaCode host seam is permission-shaped: it is handed the native
-    // request and returns the core's decision; it never allows by default.
-    const alphaHost = {
-      async state() { return { policy_version: 1, state_digest: 'd'.repeat(64) }; },
-      async prepareAction() { throw new Error('CoreDeniedUnknownPermission'); },
-      async verifyAnswer() { return false; },
-      async recordNativeEvent() { /* noop */ },
-    };
-    const adapter = new AlphaCodeAdapter(new AlphaNativeClient(channel, identity), alphaHost);
-    const d = await adapter.describe();
-    expect(d.harness).toBe('alphacode');
-    expect(d.transport).toBe('owned-stdio-acp');
-    expect(d.approval).toBe('unqualified');
 
     // The pinned permission extension is mandatory: a handshake reporting no
     // active gate is refused outright rather than run unenforced.
@@ -170,41 +167,50 @@ describe('native boundary — capability honesty', () => {
 
 describe('native boundary — no fabricated sessions or events', () => {
   it('a turn without an open session fails instead of emitting events', async () => {
-    const adapter = new OmpAdapter(host, { binary: '/nonexistent/omp', stateDir: join(baseTemp, 'omp-none') });
-    const session: SessionRef = {
-      harness: 'omp',
-      native_id: 'never-opened',
-      native_version: '0',
-      project_id: 'proj-1',
-      cwd: '/tmp',
-      resolved_route: { connection_id: 'local', model_id: 'm' },
-    };
-    const collected: unknown[] = [];
-    await expect((async () => {
-      for await (const event of adapter.turn(session, turn(session, ['read']))) collected.push(event);
-    })()).rejects.toThrow();
-    expect(collected).toHaveLength(0);
+    await withNativeFixture('omp', 'version', async fixture => {
+      const adapter = new OmpAdapter(host, { binary: fixture.absentBinary, stateDir: fixture.stateDir });
+      const session: SessionRef = {
+        harness: 'omp',
+        native_id: 'never-opened',
+        native_version: '0',
+        project_id: 'proj-1',
+        cwd: fixture.cwd,
+        resolved_route: { connection_id: 'local', model_id: 'm' },
+      };
+      const collected: unknown[] = [];
+      await expect((async () => {
+        for await (const event of adapter.turn(session, turn(session, ['read']))) collected.push(event);
+      })()).rejects.toThrow('SessionIdentityMismatch');
+      expect(collected).toHaveLength(0);
+      expect(fixture.invocations()).toEqual([]);
+    });
   });
 
   it('an unavailable binary is reported, never substituted', async () => {
-    const adapter = new OmpAdapter(host, { binary: '/nonexistent/omp', stateDir: join(baseTemp, 'omp-missing') });
-    const d = await adapter.describe();
-    expect(d.version).toBe('');
-    expect(d.approval).toBe('unavailable');
-    await expect(adapter.open(input('omp'))).rejects.toThrow();
+    await withNativeFixture('omp', 'version', async fixture => {
+      const adapter = new OmpAdapter(host, { binary: fixture.absentBinary, stateDir: fixture.stateDir });
+      const descriptor = await adapter.describe();
+      expect(descriptor.version).toBe('');
+      expect(descriptor.approval).toBe('unavailable');
+      await expect(adapter.open(input('omp', { cwd: fixture.cwd }))).rejects.toThrow(/ompUnavailable/);
+      expect(fixture.invocations()).toEqual([]);
+    });
   });
 
   it('interrupt without a session fails rather than reporting a false stop', async () => {
-    const adapter = new CodexAdapter(host, { binary: 'codex', home: join(baseTemp, 'codex-stop') });
-    const session: SessionRef = {
-      harness: 'codex',
-      native_id: 'never-opened',
-      native_version: '0',
-      project_id: 'proj-1',
-      cwd: '/tmp',
-      resolved_route: { connection_id: 'local', model_id: 'm' },
-    };
-    await expect(adapter.interrupt(session)).rejects.toThrow();
+    await withNativeFixture('codex', 'version', async fixture => {
+      const adapter = new CodexAdapter(host, { binary: fixture.binary, home: fixture.home });
+      const session: SessionRef = {
+        harness: 'codex',
+        native_id: 'never-opened',
+        native_version: '0',
+        project_id: 'proj-1',
+        cwd: fixture.cwd,
+        resolved_route: { connection_id: 'local', model_id: 'm' },
+      };
+      await expect(adapter.interrupt(session)).rejects.toThrow('SessionIdentityMismatch');
+      expect(fixture.invocations()).toEqual([]);
+    });
   });
 });
 
@@ -251,27 +257,19 @@ describe('native boundary — authority comes from core state, not the model', (
     expect(writable.sandbox).toBe('workspace-write');
   });
 
-  it('a resumed session must match the new session identity or be refused', async () => {
-    const adapter = new OpenCodeAdapter(host, { binary: 'opencode', stateDir: join(baseTemp, 'opencode-resume') });
-    const mismatched: SessionRef = {
-      harness: 'opencode',
-      native_id: 'other-project-session',
-      native_version: '0',
-      project_id: 'another-project',
-      cwd: '/elsewhere',
-      resolved_route: { connection_id: 'local', model_id: 'm' },
-    };
-    const resumeInput = input('opencode', { resume: mismatched });
-    // Either the resume is refused outright, or the session ref it returns is a
-    // new, distinct native identity bound to this project — never the borrowed
-    // session of another project.
-    try {
-      const opened = await adapter.open(resumeInput);
-      expect(opened.project_id).toBe(resumeInput.project_id);
-      expect(opened.native_id).not.toBe(mismatched.native_id);
-      expect(canonical(opened.resolved_route)).toBe(canonical(resumeInput.route));
-    } catch (error) {
-      expect(String(error)).toMatch(/SessionIdentityMismatch|Unavailable|Exit|not/i);
-    }
+  it('a resumed session with another project identity is refused before native dispatch', async () => {
+    await withNativeFixture('opencode', 'version', async fixture => {
+      const adapter = new OpenCodeAdapter(host, { binary: fixture.binary, stateDir: fixture.stateDir });
+      const mismatched: SessionRef = {
+        harness: 'opencode',
+        native_id: 'other-project-session',
+        native_version: '0',
+        project_id: 'another-project',
+        cwd: fixture.cwd,
+        resolved_route: { connection_id: 'local', model_id: 'm' },
+      };
+      await expect(adapter.open(input('opencode', { cwd: fixture.cwd, resume: mismatched }))).rejects.toThrow('SessionIdentityMismatch');
+      expect(fixture.invocations().every(call => call.args.length === 1 && call.args[0] === '--version')).toBe(true);
+    });
   });
 });

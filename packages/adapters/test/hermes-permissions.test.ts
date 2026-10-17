@@ -64,6 +64,14 @@ const DOUBLE_SOURCE = [
   'function handle(msg) {',
   '  if (!msg || typeof msg !== "object") return;',
   '  if (typeof msg.id === "number" && typeof msg.method !== "string") { onServerRequestReply(msg); return; }',
+  '  if (msg.method === "session/cancel") {',
+  '    if (pendingPrompt !== null) {',
+  '      const id = pendingPrompt;',
+  '      pendingPrompt = null;',
+  '      send({ jsonrpc: "2.0", id: id, result: { stopReason: "cancelled" } });',
+  '    }',
+  '    return;',
+  '  }',
   '  if (typeof msg.method !== "string" || typeof msg.id !== "number") return;',
   '  const id = msg.id;',
   '  const params = msg.params;',
@@ -384,10 +392,9 @@ describe('hermes adapter permissions', () => {
     }
   });
 
-  it('cancel_requires_child_stop', async () => {
+  it('cancel_waits_for_native_turn_stop_and_close_observes_owned_process_exit', async () => {
     const { dir, binary } = makeState('idle');
-    // A gated host keeps the turn parked until the test releases it, so the cancel is issued
-    // against a turn that is definitely active (no wall-clock guessing).
+    // Release admission, then synchronize on the actual streamed turn start.
     const gate = Promise.withResolvers<void>();
     const events: Array<Record<string, unknown>> = [];
     const host: NativePermissionHost = {
@@ -414,25 +421,19 @@ describe('hermes adapter permissions', () => {
       ref = session;
       const collected: WorkerEvent[] = [];
       let consumeError: unknown;
+      const turnStarted = Promise.withResolvers<void>();
       const consume = (async () => {
-        for await (const event of adapter.turn(session, turnInput(input.policy))) collected.push(event);
+        for await (const event of adapter.turn(session, turnInput(input.policy))) {
+          collected.push(event);
+          if (event.payload.type === 'turn_started') turnStarted.resolve();
+        }
       })().catch(error => {
         consumeError = error;
       });
 
       gate.resolve();
-      let cancelled = false;
-      for (let attempt = 0; attempt < 500 && !cancelled; attempt += 1) {
-        try {
-          await adapter.interrupt(session);
-          cancelled = true;
-        } catch {
-          // The turn body has not reached the point where it marks itself active yet; yield a
-          // microtask and retry. This is a deterministic ordering barrier, not a sleep.
-          await Promise.resolve();
-        }
-      }
-      expect(cancelled).toBe(true);
+      await turnStarted.promise;
+      await adapter.interrupt(session);
 
       await consume;
       expect(consumeError).toBeUndefined();

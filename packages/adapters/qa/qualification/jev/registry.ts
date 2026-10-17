@@ -10,7 +10,8 @@
 // the same digest.
 import { loadJsonl, validateFixtureRows } from "../../../src/jev/domains/types";
 import type { DomainDefinition, FixtureRow } from "../../../src/jev/domains/types";
-import { FACADE_BASE, RUNTIME_BASE, lexicalJson, sha256 } from "../../../src/jev/identity";
+import { sha256 } from "../../../src/jev/identity";
+import { JevClient } from "../../../src/jev/client";
 import type { JevTransport, RuntimeIdentity } from "../../../src/jev/types";
 
 export async function loadFixtureRows(domain: DomainDefinition): Promise<FixtureRow[]> {
@@ -33,31 +34,13 @@ export const offlineTransport: JevTransport = () =>
     headers: { "content-type": "application/json" },
   }));
 
-/**
- * Runtime identity as reported metadata only: the facade must answer /health and
- * the raw runtime must report a model alias, path and build. The digest binds the
- * live runtime to a pre-registered claimed digest; an unreachable runtime, or one
- * that reports no model identity at all, is null and MUST be treated downstream
- * as an identity mismatch (never as a passing identity).
- */
+/** Evaluation, calibration and actual judgments use the same strict probe. */
 export async function probeRuntimeIdentity(transport: JevTransport): Promise<RuntimeIdentity | null> {
   try {
-    const health = await transport(`${FACADE_BASE}/health`, { method: "GET", signal: AbortSignal.timeout(3000) });
-    if (!health.ok) return null;
-  } catch {
-    return null;
-  }
-  try {
-    const props = await transport(`${RUNTIME_BASE}/props`, { method: "GET", signal: AbortSignal.timeout(3000) });
-    if (!props.ok) return null;
-    const j: Record<string, unknown> = await props.json();
-    // model_alias is the field the runtime's /props actually reports (see
-    // src/jev/identity.ts); the remaining names are older aliases.
-    const model_identity = String(j.model_alias ?? j.model_name ?? j.model_identity ?? j.model ?? "");
-    if (!model_identity) return null;
-    const model_path = String(j.model_path ?? j.path ?? "");
-    const build_info = String(j.build_info ?? j.server ?? JSON.stringify(j));
-    return { digest: sha256(lexicalJson({ model_identity, model_path, build_info })), model_identity, model_path, build_info, assurance: "reported_metadata_only" };
+    return await new JevClient({
+      transport,
+      resolveInput: async () => { throw new Error("identity probe does not resolve task content"); },
+    }).observeIdentity(AbortSignal.timeout(2000));
   } catch {
     return null;
   }

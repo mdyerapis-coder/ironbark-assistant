@@ -5,10 +5,11 @@ import { ClaudeAdapter } from '../src/harness/claude';
 import { HermesAdapter } from '../src/harness/hermes';
 import type { NativePermissionHost } from '../src/harness/native/host';
 import type { ActionSpec, SessionRef, HarnessKind, OpenSessionInput } from '../../contracts/src/generated';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-const baseTemp = join(tmpdir(), 'ironbark-test');
+import type { HarnessAdapter } from '../src/harness/types';
+import { withNativeFixture, type NativeFixture } from './fixtures/native-process';
 
 /** Minimal host for offline tests — records calls but never allows. */
 const testHost: NativePermissionHost = {
@@ -18,176 +19,104 @@ const testHost: NativePermissionHost = {
   async recordNativeEvent() { /* noop */ },
 };
 
-/** Build a default OpenSessionInput for testing. */
-function testInput(harness: string, resume?: SessionRef): OpenSessionInput {
+/** Keep every unit launch inside its test-owned workspace. */
+function testInput(harness: HarnessKind, cwd: string, resume?: SessionRef): OpenSessionInput {
   return {
     run_id: `run_${harness}_test`,
     project_id: `proj_${harness}_test`,
-    cwd: '/tmp',
-    route: { connection_id: 'test', model_id: 'auto', harness: harness as HarnessKind },
+    cwd,
+    route: { connection_id: 'test', model_id: 'auto', harness },
     context: { digest: 'd', brief: '', constraints: [], excerpts: [], artifacts: [], unresolved_questions: [], originating_sessions: [] },
     policy: { version: 1, project_id: `proj_${harness}_test`, allowed_connection_ids: [], allowed_tools: [], read_roots: [], write_roots: [], network_destinations: [], local_only: false, max_workers: 1, max_requests: 1, max_cost_microusd: 0, spend_policy: 'free_only', allow_unknown_cost: false },
     resume,
   };
 }
 
-function makeCodex(h: NativePermissionHost) { return new CodexAdapter(h, { binary: 'codex', home: join(baseTemp, 'codex') }); }
-function makeOpenCode(h: NativePermissionHost) { return new OpenCodeAdapter(h, { binary: 'opencode', stateDir: join(baseTemp, 'opencode') }); }
-function makeClaude(h: NativePermissionHost) { return new ClaudeAdapter(h, { binary: 'claude', home: join(baseTemp, 'claude') }); }
-function makeHermes(h: NativePermissionHost) { return new HermesAdapter(h, { binary: 'hermes', stateDir: join(baseTemp, 'hermes') }); }
+type UnitHarness = {
+  name: HarnessKind;
+  create(host: NativePermissionHost, fixture: NativeFixture, binary?: string): HarnessAdapter;
+  unavailable: RegExp;
+  noSession: string;
+};
 
-describe('harness adapters — truthful capability discovery', () => {
-  describe('codex', () => {
-    it('describe_reports_real_version_and_honest_states', async () => {
-      const adapter = makeCodex(testHost);
-      const d = await adapter.describe();
-      expect(d.harness).toBe('codex');
-      expect(d.transport).toBe('stdio-json-rpc');
-      expect(['unavailable', 'unqualified']).toContain(d.approval);
-      expect(['unavailable', 'unqualified']).toContain(d.cancel);
-      expect(['unavailable', 'unqualified']).toContain(d.resume);
-      expect(['unavailable', 'unqualified']).toContain(d.child_observability);
-      if (d.version) {
-        expect(d.version.length).toBeGreaterThan(0);
-        expect(d.approval).toBe('unqualified');
-      } else {
-        expect(d.approval).toBe('unavailable');
+const unitHarnesses: UnitHarness[] = [
+  { name: 'codex', create: (host, f, binary = f.binary) => new CodexAdapter(host, { binary, home: f.home }), unavailable: /CodexUnavailable/, noSession: 'CodexNoOpenSession' },
+  { name: 'opencode', create: (host, f, binary = f.binary) => new OpenCodeAdapter(host, { binary, stateDir: f.stateDir }), unavailable: /opencodeUnavailable/, noSession: 'AcpNoOpenSession' },
+  { name: 'claude', create: (host, f, binary = f.binary) => new ClaudeAdapter(host, { binary, home: f.home }), unavailable: /ClaudeUnavailable/, noSession: 'ClaudeNoOpenSession' },
+  { name: 'hermes', create: (host, f, binary = f.binary) => new HermesAdapter(host, { binary, stateDir: f.stateDir }), unavailable: /hermesUnavailable/, noSession: 'AcpNoOpenSession' },
+];
+
+describe('harness adapters — isolated executable discovery and denial', () => {
+  for (const { name, create, unavailable, noSession } of unitHarnesses) {
+    describe(name, () => {
+      it('executes a version probe without qualifying native capabilities or creating a session', async () => {
+        await withNativeFixture(name, 'version', async fixture => {
+          const adapter = create(testHost, fixture);
+          const descriptor = await adapter.describe();
+          expect(descriptor.version).toBe('1.2.3');
+          expect([descriptor.approval, descriptor.cancel, descriptor.resume, descriptor.child_observability]).toEqual([
+            'unqualified', 'unqualified', 'unqualified', 'unqualified',
+          ]);
+          expect(fixture.invocations().map(call => call.args)).toEqual([['--version']]);
+          await expect(adapter.answerPermission({ native_request_id: 'unknown', action: {} as ActionSpec, decision: 'allow' })).rejects.toThrow(noSession);
+        });
+      });
+
+      for (const mode of ['failure', 'malformed-version'] as const) {
+        it(`refuses session creation after a ${mode} probe`, async () => {
+          await withNativeFixture(name, mode, async fixture => {
+            const adapter = create(testHost, fixture);
+            const descriptor = await adapter.describe();
+            expect(descriptor.version).toBe('');
+            expect(descriptor.approval).toBe('unavailable');
+            await expect(adapter.open(testInput(name, fixture.cwd))).rejects.toThrow(unavailable);
+            expect(fixture.invocations().map(call => call.args)).toEqual([['--version'], ['--version']]);
+          });
+        });
       }
-    });
 
-    it('open_rejects_unavailable_binary', async () => {
-      const adapter = new CodexAdapter(testHost, { binary: '/nonexistent/codex', home: join(baseTemp, 'codex-fail') });
-      await expect(adapter.open(testInput('codex'))).rejects.toThrow(/CodexUnavailable/);
-    });
+      it('reports an absent owned path and refuses session creation without fallback', async () => {
+        await withNativeFixture(name, 'version', async fixture => {
+          const adapter = create(testHost, fixture, fixture.absentBinary);
+          const descriptor = await adapter.describe();
+          expect(descriptor.version).toBe('');
+          expect(descriptor.approval).toBe('unavailable');
+          await expect(adapter.open(testInput(name, fixture.cwd))).rejects.toThrow(unavailable);
+          expect(fixture.invocations()).toEqual([]);
+        });
+      });
 
-    it('open_rejects_route_mismatch', async () => {
-      const adapter = makeCodex(testHost);
-      const d = await adapter.describe();
-      if (!d.version) return;
-      const input = testInput('codex');
-      input.route.harness = 'opencode';
-      await expect(adapter.open(input)).rejects.toThrow('SessionIdentityMismatch');
-    });
+      it('rejects route mismatch before native protocol dispatch', async () => {
+        await withNativeFixture(name, 'version', async fixture => {
+          const adapter = create(testHost, fixture);
+          const mismatched = testInput(name, fixture.cwd);
+          mismatched.route.harness = name === 'codex' ? 'opencode' : 'codex';
+          await expect(adapter.open(mismatched)).rejects.toThrow('SessionIdentityMismatch');
+          // A cheap version probe is permitted; starting any protocol is not.
+          expect(fixture.invocations().every(call => call.args.length === 1 && call.args[0] === '--version')).toBe(true);
+        });
+      });
 
-    it('answerPermission_unknown_id_fails_closed', async () => {
-      const adapter = makeCodex(testHost);
-      await expect(adapter.answerPermission({ native_request_id: 'unknown', action: {} as ActionSpec, decision: 'allow' })).rejects.toThrow('CodexNoOpenSession');
-    });
-  });
+      it('fails closed on permission answers without launching any process', async () => {
+        await withNativeFixture(name, 'version', async fixture => {
+          const adapter = create(testHost, fixture);
+          await expect(adapter.answerPermission({ native_request_id: 'unknown', action: {} as ActionSpec, decision: 'allow' })).rejects.toThrow(noSession);
+          expect(fixture.invocations()).toEqual([]);
+        });
+      });
 
-  describe('opencode', () => {
-    it('describe_reports_real_version_and_honest_states', async () => {
-      const adapter = makeOpenCode(testHost);
-      const d = await adapter.describe();
-      expect(d.harness).toBe('opencode');
-      expect(d.transport).toBe('stdio-acp');
-      expect(['unavailable', 'unqualified']).toContain(d.approval);
-      expect(['unavailable', 'unqualified']).toContain(d.cancel);
-      expect(['unavailable', 'unqualified']).toContain(d.resume);
-      expect(['unavailable', 'unqualified']).toContain(d.child_observability);
-      if (d.version) {
-        expect(d.version.length).toBeGreaterThan(0);
-        expect(d.approval).toBe('unqualified');
-      } else {
-        expect(d.approval).toBe('unavailable');
-      }
+      it('rejects malformed native initialization and reaps its actual process', async () => {
+        await withNativeFixture(name, 'malformed-protocol', async fixture => {
+          const adapter = create(testHost, fixture);
+          await expect(adapter.open(testInput(name, fixture.cwd))).rejects.toThrow();
+          const dispatched = fixture.invocations().filter(call => !call.args.includes('--version'));
+          expect(dispatched).toHaveLength(1);
+          expect(() => process.kill(dispatched[0]!.pid, 0)).toThrow();
+          await expect(adapter.answerPermission({ native_request_id: 'unknown', action: {} as ActionSpec, decision: 'allow' })).rejects.toThrow(noSession);
+        });
+      });
     });
-
-    it('open_rejects_unavailable_binary', async () => {
-      const adapter = new OpenCodeAdapter(testHost, { binary: '/nonexistent/opencode', stateDir: join(baseTemp, 'opencode-fail') });
-      await expect(adapter.open(testInput('opencode'))).rejects.toThrow(/opencodeUnavailable/);
-    });
-
-    it('open_rejects_route_mismatch', async () => {
-      const adapter = makeOpenCode(testHost);
-      const d = await adapter.describe();
-      if (!d.version) return;
-      const input = testInput('opencode');
-      input.route.harness = 'codex';
-      await expect(adapter.open(input)).rejects.toThrow('SessionIdentityMismatch');
-    });
-
-    it('answerPermission_unknown_id_fails_closed', async () => {
-      const adapter = makeOpenCode(testHost);
-      await expect(adapter.answerPermission({ native_request_id: 'unknown', action: {} as ActionSpec, decision: 'allow' })).rejects.toThrow('AcpNoOpenSession');
-    });
-  });
-
-  describe('claude', () => {
-    it('describe_reports_real_version_and_honest_states', async () => {
-      const adapter = makeClaude(testHost);
-      const d = await adapter.describe();
-      expect(d.harness).toBe('claude');
-      expect(d.transport).toBe('stdio-stream-json');
-      expect(['unavailable', 'unqualified']).toContain(d.approval);
-      expect(['unavailable', 'unqualified']).toContain(d.cancel);
-      expect(['unavailable', 'unqualified']).toContain(d.resume);
-      expect(['unavailable', 'unqualified']).toContain(d.child_observability);
-      if (d.version) {
-        expect(d.version.length).toBeGreaterThan(0);
-        expect(d.approval).toBe('unqualified');
-      } else {
-        expect(d.approval).toBe('unavailable');
-      }
-    });
-
-    it('open_rejects_unavailable_binary', async () => {
-      const adapter = new ClaudeAdapter(testHost, { binary: '/nonexistent/claude', home: join(baseTemp, 'claude-fail') });
-      await expect(adapter.open(testInput('claude'))).rejects.toThrow(/ClaudeUnavailable/);
-    });
-
-    it('open_rejects_route_mismatch', async () => {
-      const adapter = makeClaude(testHost);
-      const d = await adapter.describe();
-      if (!d.version) return;
-      const input = testInput('claude');
-      input.route.harness = 'codex';
-      await expect(adapter.open(input)).rejects.toThrow('SessionIdentityMismatch');
-    });
-
-    it('answerPermission_unknown_id_fails_closed', async () => {
-      const adapter = makeClaude(testHost);
-      await expect(adapter.answerPermission({ native_request_id: 'unknown', action: {} as ActionSpec, decision: 'allow' })).rejects.toThrow('ClaudeNoOpenSession');
-    });
-  });
-
-  describe('hermes', () => {
-    it('describe_reports_real_version_and_honest_states', async () => {
-      const adapter = makeHermes(testHost);
-      const d = await adapter.describe();
-      expect(d.harness).toBe('hermes');
-      expect(d.transport).toBe('stdio-acp');
-      expect(['unavailable', 'unqualified']).toContain(d.approval);
-      expect(['unavailable', 'unqualified']).toContain(d.cancel);
-      expect(['unavailable', 'unqualified']).toContain(d.resume);
-      expect(['unavailable', 'unqualified']).toContain(d.child_observability);
-      if (d.version) {
-        expect(d.version.length).toBeGreaterThan(0);
-        expect(d.approval).toBe('unqualified');
-      } else {
-        expect(d.approval).toBe('unavailable');
-      }
-    });
-
-    it('open_rejects_unavailable_binary', async () => {
-      const adapter = new HermesAdapter(testHost, { binary: '/nonexistent/hermes', stateDir: join(baseTemp, 'hermes-fail') });
-      await expect(adapter.open(testInput('hermes'))).rejects.toThrow(/hermesUnavailable/);
-    });
-
-    it('open_rejects_route_mismatch', async () => {
-      const adapter = makeHermes(testHost);
-      const d = await adapter.describe();
-      if (!d.version) return;
-      const input = testInput('hermes');
-      input.route.harness = 'codex';
-      await expect(adapter.open(input)).rejects.toThrow('SessionIdentityMismatch');
-    });
-
-    it('answerPermission_unknown_id_fails_closed', async () => {
-      const adapter = makeHermes(testHost);
-      await expect(adapter.answerPermission({ native_request_id: 'unknown', action: {} as ActionSpec, decision: 'allow' })).rejects.toThrow('AcpNoOpenSession');
-    });
-  });
+  }
 });
 
 // A live round-trip needs an authenticated provider/CLI session, which the plan
@@ -201,38 +130,45 @@ if (!LIVE_HARNESS) {
   console.log('skipping live harness round-trip: set IRONBARK_LIVE_HARNESS=1 to run it (owner-gated live qualification)');
 }
 
-describe.skipIf(!LIVE_HARNESS)('harness adapters — real offline round-trip (open/exportContext/close)', () => {
+describe.skipIf(!LIVE_HARNESS)('harness adapters — owner-gated real CLI round-trip (open/exportContext/close)', () => {
+  // Deliberately separate from unitHarnesses: opt-in qualification must invoke
+  // installed CLIs, never a fixture executable.
   const harnesses = [
-    { name: 'codex', factory: makeCodex },
-    { name: 'opencode', factory: makeOpenCode },
-    { name: 'claude', factory: makeClaude },
-    { name: 'hermes', factory: makeHermes },
+    { name: 'codex', factory: (home: string) => new CodexAdapter(testHost, { binary: 'codex', home }) },
+    { name: 'opencode', factory: (stateDir: string) => new OpenCodeAdapter(testHost, { binary: 'opencode', stateDir }) },
+    { name: 'claude', factory: (home: string) => new ClaudeAdapter(testHost, { binary: 'claude', home }) },
+    { name: 'hermes', factory: (stateDir: string) => new HermesAdapter(testHost, { binary: 'hermes', stateDir }) },
   ] as const;
 
   for (const { name, factory } of harnesses) {
     describe(name, () => {
-      let adapter: import('../src/harness/types').HarnessAdapter;
+      let adapter: HarnessAdapter;
       let sessionRef: SessionRef;
+      let liveRoot: string;
 
       beforeAll(async () => {
-        adapter = factory(testHost);
+        liveRoot = mkdtempSync(join(tmpdir(), `ironbark-${name}-live-`));
+        adapter = factory(liveRoot);
         const d = await adapter.describe();
         if (d.version === '') {
           console.log(`${name}: binary not callable, skipping real round-trip`);
           return;
         }
-        sessionRef = await adapter.open(testInput(name));
+        sessionRef = await adapter.open(testInput(name, liveRoot));
         expect(sessionRef.harness).toBe(name);
         expect(sessionRef.native_id.length).toBeGreaterThan(0);
       }, 120_000);
 
       afterAll(async () => {
-        if (sessionRef && adapter) {
-          await adapter.close(sessionRef).catch(() => undefined);
+        try {
+          if (sessionRef && adapter) {
+            await adapter.close(sessionRef);
+          }
+        } finally {
+          if (liveRoot) rmSync(liveRoot, { recursive: true, force: true });
         }
       });
 
-      if (name === 'hermes') it('hermes session/new is slow (~10s)', () => {});
 
       it('exportContext_returns_valid_package', async () => {
         if (!sessionRef) return;

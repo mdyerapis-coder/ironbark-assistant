@@ -29,7 +29,6 @@ BuildRequires:  desktop-file-utils
 BuildRequires:  webkit2gtk4.1-devel
 BuildRequires:  javascriptcoregtk4.1-devel
 BuildRequires:  librsvg2-devel
-BuildRequires:  libappindicator-gtk3-devel
 BuildRequires:  openssl-devel
 
 # bubblewrap is required by the worker-containment boundary; glibc is the
@@ -72,10 +71,11 @@ export CXXFLAGS="$(echo "${CXXFLAGS:-}" | sed -E 's/(^|[[:space:]])-flto(=[A-Za-
 
 %install
 rm -rf %{buildroot}
-install -Dm755 target/release/ironbark-core    %{buildroot}%{_bindir}/ironbark-core
-install -Dm755 target/release/ironbark-cli     %{buildroot}%{_bindir}/ironbark-cli
-install -Dm755 target/release/ironbark-desktop %{buildroot}%{_bindir}/ironbark-desktop
-install -Dm755 target/release/namespace_bridge %{buildroot}/opt/ironbark/namespace-bridge
+release_dir="${CARGO_TARGET_DIR:-target}/release"
+install -Dm755 "${release_dir}/ironbark-core"    %{buildroot}%{_bindir}/ironbark-core
+install -Dm755 "${release_dir}/ironbark-cli"     %{buildroot}%{_bindir}/ironbark-cli
+install -Dm755 "${release_dir}/ironbark-desktop" %{buildroot}%{_bindir}/ironbark-desktop
+install -Dm755 "${release_dir}/namespace_bridge" %{buildroot}/opt/ironbark/namespace-bridge
 install -Dm644 LICENSE %{buildroot}%{_licensedir}/%{name}/LICENSE
 install -Dm644 README.md %{buildroot}%{_docdir}/%{name}/README.md
 install -Dm644 packaging/desktop/ironbark-assistant.desktop %{buildroot}%{_datadir}/applications/ironbark-assistant.desktop

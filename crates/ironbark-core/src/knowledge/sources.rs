@@ -11,7 +11,7 @@
 //! malformed, unavailable extractor, empty) returns before that transaction and
 //! therefore publishes NO partial revision.
 //!
-//! A revision's digest is a retention root (`store::retention::referenced_digests`),
+//! A revision's digest is a retention root (`store::schema::StorageSchema::roots`),
 //! so the bytes it names must be a resolvable content-addressed object for EVERY
 //! input kind. Ingestion therefore publishes the resolved bytes into the project
 //! CAS BEFORE the revision row is committed: a failed publish leaves no revision

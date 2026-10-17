@@ -26,8 +26,8 @@ pub struct TaskAuthority {
     pub project_id: ProjectId,
     pub owner_approval_id: GrantId,
     pub scope: TaskScope,
-    pub policy_version: u64,
-    #[ts(type = "number")] pub expires_at: i64,
+    #[serde(with = "crate::contracts::wire::u64")] #[schemars(with = "crate::contracts::wire::WireU64Schema")] #[ts(type = "string")] pub policy_version: u64,
+    #[serde(with = "crate::contracts::wire::i64")] #[schemars(with = "crate::contracts::wire::WireI64Schema")] #[ts(type = "string")] pub expires_at: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

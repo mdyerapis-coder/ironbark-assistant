@@ -1,4 +1,5 @@
 import type { ActionSpec, CapabilityState, CapabilityObservation, ContextPackage, HarnessDescriptor, OpenSessionInput, PermissionAnswer, SessionRef, TurnInput, WorkerEvent } from '../../../contracts/src/generated';
+import { formatWireI64 } from '../../../contracts/src/wire';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { canonical, checkTurnBudget, contextPrefix, deriveActionSpec, digest, type NativePermissionHost, type NativePermissionRequest } from './native/host';
@@ -110,7 +111,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     const { version, reason } = await this.#probeVersion();
     const state: CapabilityState = version === '' ? 'unavailable' : 'unqualified';
     const implementation = version === '' ? `unavailable:${reason.slice(0, 120)}` : `probed:claude ${version}`;
-    const observation = (name: string): CapabilityObservation => ({ name, state, implementation_version: implementation, observed_at: Date.now() });
+    const observation = (name: string): CapabilityObservation => ({ name, state, implementation_version: implementation, observed_at: formatWireI64(BigInt(Date.now())) });
     return {
       harness: 'claude',
       version,

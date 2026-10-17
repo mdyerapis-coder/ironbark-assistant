@@ -71,6 +71,31 @@
     "uninstall": "local-install.sh --uninstall",
     "post_install": "desktop-file-validate <prefix>/share/applications/ironbark-assistant.desktop; update-desktop-database -q <prefix>/share/applications 2>/dev/null || true"
   },
+  "source_inventory": {
+    "required": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      "package.json",
+      "bun.lock",
+      "tsconfig.json",
+      "packaging/manifest.json",
+      "packages/contracts/src/generated.ts",
+      "packages/contracts/schema.json"
+    ],
+    "untracked_roots": [
+      "crates/",
+      "packages/",
+      "apps/",
+      "qa/",
+      "packaging/",
+      "tests/",
+      "integrations/",
+      "docs/",
+      ".github/",
+      ".cargo/"
+    ]
+  },
   "release_gates": {
     "note": "A release report binds these gates; a missing or failed required gate blocks the release rather than being reported as passed.",
     "required": [

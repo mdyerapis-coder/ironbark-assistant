@@ -53,7 +53,7 @@ pub struct ApprovedTarget {
     pub role: ScopeRole,
     pub kind: TargetKind,
     pub target_id: String,
-    pub expires_at: i64,
+    #[serde(with = "crate::contracts::wire::i64")] #[schemars(with = "crate::contracts::wire::WireI64Schema")] #[ts(type = "string")] pub expires_at: i64,
 }
 
 /// The reserved identity of the operator's live session bus / personal browser.

@@ -3,8 +3,10 @@ pub mod events;
 pub mod imports;
 pub mod migrations;
 pub mod objects;
+pub mod preflight;
 pub mod requests;
 pub mod retention;
+pub mod schema;
 
 use std::{os::fd::AsRawFd, path::Path, sync::Arc};
 use tokio::sync::{mpsc, oneshot, Notify};

@@ -44,9 +44,11 @@ import type {
   CoreCommand,
   CoreReply,
   Effect,
+  ResultOf,
   ScopeRole,
   TargetKind,
 } from '../../../contracts/src/generated.ts';
+import { validateResult } from '../../../contracts/src/validate.ts';
 
 /** Re-exports from the automation module for convenience. */
 export type {
@@ -97,12 +99,15 @@ export interface AutomationCoreTransport {
 export class AutomationAdapter {
   constructor(private readonly core: AutomationCoreTransport) {}
 
-  /** Dispatch one broker command and unwrap the core's reply, surfacing any
-   *  typed broker error rather than swallowing it. */
-  private async dispatch<T>(command: CoreCommand, requestId?: string): Promise<T> {
+  /** Dispatch one broker command and unwrap the reply's matching leaf.
+   *  `validateResult` proves (against the generated schema) that the reply
+   *  envelope is exactly this command's variant — a mismatched or echoed
+   *  payload is rejected — and the broker's typed error is rethrown verbatim
+   *  rather than swallowed. */
+  private async dispatch<C extends CoreCommand>(command: C, requestId?: string): Promise<ResultOf<C>> {
     const reply = await this.core.command(command, requestId);
     if (reply.type === 'error') throw new CoreError(reply.code, reply.message, reply.details);
-    return reply.value as T;
+    return validateResult(command, reply.value);
   }
 
   /**
@@ -111,7 +116,7 @@ export class AutomationAdapter {
    * be bound to via `action.expected_state_digest`.
    */
   async observe(target: ApprovedTarget): Promise<AutomationObservation> {
-    return this.dispatch<AutomationObservation>({ type: 'automation_observe', target });
+    return this.dispatch({ type: 'automation_observe', target });
   }
 
   /**
@@ -120,7 +125,7 @@ export class AutomationAdapter {
    * still requires an owner-issued `ConsentRecord` that only the owner can record.
    */
   async execute(action: ActionSpec, grant: ApprovalGrant, requestId?: string): Promise<AutomationReceipt> {
-    return this.dispatch<AutomationReceipt>(
+    return this.dispatch(
       {
         type: 'automation_execute',
         action,
@@ -136,6 +141,6 @@ export class AutomationAdapter {
    * use.
    */
   async release(scopeId: string): Promise<void> {
-    await this.dispatch<null>({ type: 'automation_release', scope_id: scopeId });
+    await this.dispatch({ type: 'automation_release', scope_id: scopeId });
   }
 }

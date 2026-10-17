@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import type { ActionSpec, CapabilityState, CapabilityObservation, ContextPackage, HarnessDescriptor, HarnessKind, OpenSessionInput, PermissionAnswer, SessionRef, TurnInput, WorkerEvent } from '../../../contracts/src/generated';
+import { formatWireI64 } from '../../../contracts/src/wire';
 import { canonical, checkTurnBudget, contextPrefix, deriveActionSpec, digest, type NativePermissionHost, type NativePermissionRequest } from './native/host';
 import { NATIVE_STATE_ROOT, describeExit, runProbe, spawnNativeProcess, type NativeProcess, type SpawnOptions, workerEnv } from './native/process';
 import { JsonRpcClient, object, versionFromProbe, type RpcStreamItem } from './native/rpc';
@@ -46,6 +47,7 @@ type AcpConfig = {
 type AcpSession = {
   input: OpenSessionInput;
   ref: SessionRef;
+  identity: string;
   process: NativeProcess;
   client: JsonRpcClient;
   sessionId: string;
@@ -84,7 +86,7 @@ export class AcpAdapterBase implements HarnessAdapter {
     const { version, reason } = await this.#probeVersion();
     const state: CapabilityState = version === '' ? 'unavailable' : 'unqualified';
     const implementation = version === '' ? `unavailable:${reason.slice(0, 120)}` : `probed:${this.#config.binary} ${version}`;
-    const observation = (name: string): CapabilityObservation => ({ name, state, implementation_version: implementation, observed_at: Date.now() });
+    const observation = (name: string): CapabilityObservation => ({ name, state, implementation_version: implementation, observed_at: formatWireI64(BigInt(Date.now())) });
     return {
       harness: this.#config.harness,
       version,
@@ -131,7 +133,7 @@ export class AcpAdapterBase implements HarnessAdapter {
         cwd: input.cwd,
         resolved_route: input.route,
       };
-      const session: AcpSession = { input, ref, process, client, sessionId, agentName, availableModels, approvals: new Map(), closed: false };
+      const session: AcpSession = { input, ref, identity: canonical(ref), process, client, sessionId, agentName, availableModels, approvals: new Map(), closed: false };
       this.#session = session;
       return session;
     } catch (error) {
@@ -157,7 +159,7 @@ export class AcpAdapterBase implements HarnessAdapter {
   }
 
   #bound(ref: SessionRef): AcpSession {
-    if (!this.#session || this.#session.closed || this.#session.ref.native_id !== ref.native_id || canonical(this.#session.ref.resolved_route) !== canonical(ref.resolved_route)) throw new Error('SessionIdentityMismatch');
+    if (!this.#session || this.#session.closed || this.#session.identity !== canonical(ref)) throw new Error('SessionIdentityMismatch');
     return this.#session;
   }
 
@@ -173,7 +175,7 @@ export class AcpAdapterBase implements HarnessAdapter {
       return preferred ?? allow[0];
     }
     const deny = options.find(option => kindOf(option).startsWith('reject') || kindOf(option).startsWith('deny'));
-    return deny ?? options[0];
+    return deny;
   }
 
   #handleServerRequest(session: AcpSession, item: Extract<RpcStreamItem, { kind: 'server_request' }>, turnId: string, push: (event: WorkerEvent) => void): void {
@@ -296,24 +298,35 @@ export class AcpAdapterBase implements HarnessAdapter {
     const turnState: AcpTurnState = { message_id: input.message_id, stop: { promise, resolve } };
     bound.activeTurn = turnState;
     const out: Array<WorkerEvent> = [];
-    const push = (event: WorkerEvent): void => { out.push(event); };
+    let outputReady = Promise.withResolvers<void>();
+    const push = (event: WorkerEvent): void => { out.push(event); outputReady.resolve(); };
+    const reading = new AbortController();
+    const stopped = turnState.stop.promise.then(stop => ({ kind: 'stop' as const, stop }));
+    let pending: Promise<{ kind: 'item'; item: RpcStreamItem }> | undefined;
+    let completed = false;
     bound.client.request('session/prompt', { sessionId: bound.sessionId, prompt: [{ type: 'text', text: prompt }] }, ACP_TURN_WINDOW_MS).then(result => {
       const resultObject = object(result);
-      const stopReason = typeof resultObject['stopReason'] === 'string' ? resultObject['stopReason'] : 'end_turn';
-      resolve({ ok: true, stop_reason: stopReason });
+      const stopReason = typeof resultObject['stopReason'] === 'string' ? resultObject['stopReason'] : undefined;
+      resolve({ ok: stopReason === 'end_turn', stop_reason: stopReason });
       return undefined;
     }).catch(error => {
       resolve({ ok: false, message: error instanceof Error ? error.message : String(error) });
       return undefined;
     });
     try {
-      push(this.#workerEvent(bound, input.message_id, { type: 'turn_started', message_id: input.message_id }));
+      yield this.#workerEvent(bound, input.message_id, { type: 'turn_started', message_id: input.message_id });
       for (;;) {
+        while (out.length > 0) yield out.shift()!;
+        outputReady = Promise.withResolvers<void>();
+        pending ??= bound.client.queue.take(ACP_QUEUE_TAKE_MS, reading.signal).then(item => ({ kind: 'item' as const, item }));
         const next = await Promise.race([
-          bound.client.queue.take(ACP_QUEUE_TAKE_MS).then(item => ({ kind: 'item' as const, item })),
-          turnState.stop.promise.then(stop => ({ kind: 'stop' as const, stop })),
+          pending,
+          stopped,
+          outputReady.promise.then(() => ({ kind: 'output' as const })),
         ]);
-        if (next.kind === 'stop') break;
+        if (next.kind === 'stop') { completed = true; break; }
+        if (next.kind === 'output') continue;
+        pending = undefined;
         const item = next.item;
         if (item.kind === 'server_request') {
           this.#handleServerRequest(bound, item, input.message_id, push);
@@ -327,13 +340,17 @@ export class AcpAdapterBase implements HarnessAdapter {
       }
     } catch (error) {
       resolve({ ok: false, message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      reading.abort(new Error('turn_consumption_stopped'));
+      await pending?.catch(() => undefined);
+      if (!completed && !bound.closed) await this.close(session);
     }
     const stop = await turnState.stop.promise;
-    const status = stop.ok ? 'succeeded' : stop.stop_reason === 'cancelled' ? 'cancelled' : 'failed';
+    const status = stop.stop_reason === 'cancelled' ? 'cancelled' : stop.ok ? 'succeeded' : 'failed';
     const stopReason = (stop.stop_reason ?? stop.message ?? 'turn_aborted').slice(0, 200);
-    push(this.#workerEvent(bound, input.message_id, { type: 'turn_finished', message_id: input.message_id, status, stop_reason: stopReason }));
     bound.activeTurn = undefined;
-    for (const event of out) yield event;
+    while (out.length > 0) yield out.shift()!;
+    yield this.#workerEvent(bound, input.message_id, { type: 'turn_finished', message_id: input.message_id, status, stop_reason: stopReason });
   }
 
   async answerPermission(answer: PermissionAnswer): Promise<void> {
@@ -348,9 +365,11 @@ export class AcpAdapterBase implements HarnessAdapter {
 
   async interrupt(session: SessionRef): Promise<void> {
     const bound = this.#bound(session);
-    if (!bound.activeTurn) throw new Error('AcpNoActiveTurn');
+    const activeTurn = bound.activeTurn;
+    if (!activeTurn) throw new Error('AcpNoActiveTurn');
     await bound.client.notify('session/cancel', { sessionId: bound.sessionId });
-    bound.activeTurn.stop.resolve({ ok: false, stop_reason: 'cancelled' });
+    const stop = await activeTurn.stop.promise;
+    if (stop.stop_reason !== 'cancelled') throw new Error('AcpCancellationNotObserved');
   }
 
   async exportContext(session: SessionRef): Promise<ContextPackage> {
